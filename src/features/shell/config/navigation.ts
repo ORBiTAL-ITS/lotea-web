@@ -1,6 +1,7 @@
 import {
   LayoutDashboard,
   Building2,
+  FileSpreadsheet,
   TrendingDown,
   TrendingUp,
   Shield,
@@ -30,6 +31,12 @@ export const mainNav: NavItem[] = [
     label: "Egresos",
     href: "/egresos",
     icon: TrendingDown,
+    requiresCompany: true,
+  },
+  {
+    label: "Exportar Excel",
+    href: "/exportar-excel",
+    icon: FileSpreadsheet,
     requiresCompany: true,
   },
   {
