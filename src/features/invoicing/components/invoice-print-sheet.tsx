@@ -107,6 +107,13 @@ export function InvoicePrintSheet({
           <span className="font-medium text-zinc-500">Imputación</span>
           <span className="text-zinc-800">{lotLine}</span>
 
+          {movement.linkedToLot && movement.personName?.trim() ? (
+            <>
+              <span className="font-medium text-zinc-500">Persona</span>
+              <span className="text-zinc-800">{movement.personName.trim()}</span>
+            </>
+          ) : null}
+
           {movement.kind === "income" &&
           movement.linkedToLot &&
           movement.lotValue != null &&

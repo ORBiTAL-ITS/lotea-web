@@ -4,6 +4,7 @@ import {
   TrendingDown,
   TrendingUp,
   Shield,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -29,6 +30,12 @@ export const mainNav: NavItem[] = [
     label: "Egresos",
     href: "/egresos",
     icon: TrendingDown,
+    requiresCompany: true,
+  },
+  {
+    label: "Personas",
+    href: "/personas",
+    icon: Users,
     requiresCompany: true,
   },
   { label: "Administración", href: "/admin", icon: Shield, masterOnly: true },

@@ -171,6 +171,123 @@ export function formatMovementDateTime(ts: MovementTimestamp) {
   return formatMovementDay(ts);
 }
 
+/** Segundos epoch del instante contable (útil para depuración; el listado ordena por día civil). */
+export function movementSortSeconds(m: Movement): number {
+  const ts = movementDateForAccounting(m);
+  const s = finiteSeconds(ts);
+  if (s != null) return s;
+  return finiteSeconds(m.createdAt) ?? 0;
+}
+
+/**
+ * Fecha contable como `yyyy-mm-dd` en calendario Bogotá — misma noción de día que la columna «Fecha mov.».
+ * Evita que el orden del listado discrepe de lo mostrado cuando la hora UTC del timestamp no coincide.
+ */
+export function movementAccountingCalendarKey(m: Movement): string {
+  const ts = movementDateForAccounting(m);
+  if (ts == null) return "0000-00-00";
+  const c = bogotaCalendarYmd(ts);
+  if (c == null) return "0000-00-00";
+  return `${c.y}-${String(c.m).padStart(2, "0")}-${String(c.d).padStart(2, "0")}`;
+}
+
+function hasInvoiceNumber(m: Movement): boolean {
+  const n = m.invoiceNumber;
+  return typeof n === "number" && Number.isInteger(n) && n >= 1;
+}
+
+/** @deprecated Usar `compareMovementsForTable` con `{ kind: "date", dir: "desc" }`. */
+export function compareMovementsByDateDesc(a: Movement, b: Movement): number {
+  return compareMovementsForTable(a, b, { kind: "date", dir: "desc" });
+}
+
+/** Orden explícito en la tabla web (fecha o factura). */
+export type MovementTableSort =
+  | { kind: "date"; dir: "asc" | "desc" }
+  | { kind: "invoice"; dir: "asc" | "desc" };
+
+function tieBreakSameCalendarDay(
+  a: Movement,
+  b: Movement,
+  dateDir: "asc" | "desc",
+): number {
+  const ia = hasInvoiceNumber(a);
+  const ib = hasInvoiceNumber(b);
+  if (ia && ib) {
+    const na = a.invoiceNumber as number;
+    const nb = b.invoiceNumber as number;
+    if (na !== nb) return na - nb;
+  } else if (ia && !ib) return -1;
+  else if (!ia && ib) return 1;
+
+  const ca = finiteSeconds(a.createdAt) ?? 0;
+  const cb = finiteSeconds(b.createdAt) ?? 0;
+  if (dateDir === "desc") {
+    if (cb !== ca) return cb - ca;
+    return b.id.localeCompare(a.id);
+  }
+  if (ca !== cb) return ca - cb;
+  return a.id.localeCompare(b.id);
+}
+
+/**
+ * Comparador para la tabla de movimientos (web): o por día contable (Bogotá) o por número I-/E-.
+ */
+export function compareMovementsForTable(
+  a: Movement,
+  b: Movement,
+  sort: MovementTableSort,
+): number {
+  if (sort.kind === "date") {
+    const ka = movementAccountingCalendarKey(a);
+    const kb = movementAccountingCalendarKey(b);
+    if (ka !== kb) {
+      return sort.dir === "desc" ? kb.localeCompare(ka) : ka.localeCompare(kb);
+    }
+    return tieBreakSameCalendarDay(a, b, sort.dir);
+  }
+
+  const ia = hasInvoiceNumber(a);
+  const ib = hasInvoiceNumber(b);
+  if (ia && ib) {
+    const na = a.invoiceNumber as number;
+    const nb = b.invoiceNumber as number;
+    if (na !== nb) {
+      return sort.dir === "asc" ? na - nb : nb - na;
+    }
+  } else if (ia && !ib) return -1;
+  else if (!ia && ib) return 1;
+  else {
+    const ka0 = movementAccountingCalendarKey(a);
+    const kb0 = movementAccountingCalendarKey(b);
+    if (ka0 !== kb0) return kb0.localeCompare(ka0);
+    const ca0 = finiteSeconds(a.createdAt) ?? 0;
+    const cb0 = finiteSeconds(b.createdAt) ?? 0;
+    if (cb0 !== ca0) return cb0 - ca0;
+    return b.id.localeCompare(a.id);
+  }
+
+  const ka = movementAccountingCalendarKey(a);
+  const kb = movementAccountingCalendarKey(b);
+  if (ka !== kb) return kb.localeCompare(ka);
+  const ca = finiteSeconds(a.createdAt) ?? 0;
+  const cb = finiteSeconds(b.createdAt) ?? 0;
+  if (cb !== ca) return cb - ca;
+  return b.id.localeCompare(a.id);
+}
+
+export function sortMovementsForTable<T extends Movement>(
+  movements: readonly T[],
+  sort: MovementTableSort,
+): T[] {
+  return [...movements].sort((a, b) => compareMovementsForTable(a, b, sort));
+}
+
+/** Listado por defecto (API y listas sin tabla): fecha reciente primero, mismo criterio que la tabla en su modo fecha ↓. */
+export function sortMovementsForDisplayList<T extends Movement>(movements: readonly T[]): T[] {
+  return sortMovementsForTable(movements, { kind: "date", dir: "desc" });
+}
+
 export type MovementQueryOptions = {
   /** yyyy-mm activo en el filtro de mes: no exige ese token otra vez en el cuadro de búsqueda. */
   activeMonthKey?: string;
@@ -215,6 +332,8 @@ export function movementMatchesQuery(
       m.linkedToLot ? `lote ${m.lotNumber ?? ""}` : "",
       m.linkedToLot ? String(m.lotNumber ?? "") : "",
       !m.linkedToLot ? "general proyecto sin lote" : "",
+      m.personName?.trim() ? m.personName : "",
+      m.personId?.trim() ? m.personId : "",
     ].join(" "),
   );
 

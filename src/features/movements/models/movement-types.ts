@@ -25,4 +25,8 @@ export type Movement = {
   /** Fecha contable (día) para informes y filtro por mes. */
   movementDate: MovementTimestamp;
   createdAt?: MovementTimestamp;
+  /** Persona vinculada cuando el movimiento va a lote (catálogo `companies/.../people`). */
+  personId?: string | null;
+  /** Nombre mostrado (snapshot al guardar). */
+  personName?: string | null;
 };

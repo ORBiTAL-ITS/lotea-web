@@ -33,8 +33,13 @@ export function getFirebaseAdminApp(): App {
     app = existing;
     return app;
   }
-  const sa = loadServiceAccount();
-  app = initializeApp({ credential: cert(sa) });
+  const sa = loadServiceAccount() as ServiceAccount & { project_id?: string };
+  /** Obligatorio para que Auth/Firestore apunten al mismo proyecto que el JSON (evita 5 NOT_FOUND / permisos raros). */
+  const projectId = sa.project_id?.trim();
+  if (!projectId) {
+    throw new Error("La cuenta de servicio no incluye project_id.");
+  }
+  app = initializeApp({ credential: cert(sa), projectId });
   return app;
 }
 
@@ -42,6 +47,15 @@ export function getFirebaseAdminAuth() {
   return getAuth(getFirebaseAdminApp());
 }
 
+/**
+ * Base de datos Firestore: por defecto `(default)`.
+ * Si usas otra BD en la consola, define `FIREBASE_FIRESTORE_DATABASE_ID` (ej. el id de la base, no el nombre visible).
+ */
 export function getFirebaseAdminFirestore() {
-  return getFirestore(getFirebaseAdminApp());
+  const a = getFirebaseAdminApp();
+  const dbId = (process.env.FIREBASE_FIRESTORE_DATABASE_ID ?? "").trim();
+  if (!dbId || dbId === "(default)") {
+    return getFirestore(a);
+  }
+  return getFirestore(a, dbId);
 }

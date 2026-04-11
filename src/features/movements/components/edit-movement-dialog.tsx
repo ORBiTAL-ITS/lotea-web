@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { isGastosProjectId } from "@/features/projects/constants/gastos-project";
 import type { Project } from "@/features/projects/models/project-types";
 import type { Movement, MovementKind } from "../models/movement-types";
 import { updateMovement } from "../services/movements-service";
@@ -30,6 +31,10 @@ import {
   lotLedgerForMovements,
 } from "../utils/lot-ledger";
 import { lotValueHintFromProjectIncomes } from "../utils/lot-value-hint";
+import {
+  PersonPickerField,
+  type PersonPickerValue,
+} from "@/features/people/components/person-picker-field";
 
 function todayLocalISODate(): string {
   const d = new Date();
@@ -91,6 +96,7 @@ export function EditMovementDialog({
   const [linkedToLot, setLinkedToLot] = useState(false);
   const [lotStr, setLotStr] = useState("");
   const [lotValueStr, setLotValueStr] = useState("");
+  const [person, setPerson] = useState<PersonPickerValue | null>(null);
 
   const isIncome = kind === "income";
 
@@ -117,6 +123,11 @@ export function EditMovementDialog({
       }
     } else {
       setLotValueStr("");
+    }
+    if (movement.personId?.trim() && movement.personName?.trim()) {
+      setPerson({ id: movement.personId.trim(), name: movement.personName.trim() });
+    } else {
+      setPerson(null);
     }
     // projectMovements solo para sugerencia inicial; no incluir en deps para no resetear el formulario al refrescar el listado.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sincronizar solo al abrir / cambiar `movement`
@@ -196,6 +207,12 @@ export function EditMovementDialog({
           return;
         }
         lotNumber = parsedLot;
+        if (!isGastosProjectId(project.id)) {
+          if (!person?.id?.trim() || !person.name.trim()) {
+            setError("Selecciona la persona vinculada al lote.");
+            return;
+          }
+        }
         if (kind === "expense") {
           const ledger = lotLedgerForMovements(projectMovements, parsedLot, {
             excludeMovementId: movement.id,
@@ -227,6 +244,8 @@ export function EditMovementDialog({
           ? { linkedToLot: linked, lotNumber: linked ? lotNumber : null }
           : {}),
         ...(kind === "income" ? { lotValue: linked ? incomeLotValue : null } : {}),
+        personId: linked && !isGastosProjectId(project.id) ? person?.id ?? null : null,
+        personName: linked && !isGastosProjectId(project.id) ? person?.name ?? null : null,
       });
       onOpenChange(false);
       notifyMovementsUpdated();
@@ -294,7 +313,7 @@ export function EditMovementDialog({
             />
           </div>
 
-          {movement ? (
+          {movement && (isIncome || !isGastosProjectId(project.id)) ? (
             <div className="space-y-3 rounded-lg border border-border/80 bg-muted/20 px-3 py-3">
               <div className="flex items-start gap-3">
                 <input
@@ -311,6 +330,7 @@ export function EditMovementDialog({
                     if (!on) {
                       setLotStr("");
                       setLotValueStr("");
+                      setPerson(null);
                     }
                   }}
                   className="mt-1 size-4 shrink-0 rounded border-input accent-primary disabled:opacity-50"
@@ -378,6 +398,16 @@ export function EditMovementDialog({
                         valor guardado para ese lote en el proyecto.
                       </p>
                     </div>
+                  ) : null}
+                  {linkedToLot && !isGastosProjectId(project.id) ? (
+                    <PersonPickerField
+                      companyId={companyId}
+                      value={person}
+                      onChange={setPerson}
+                      disabled={loadingSubmit || !movement}
+                      id="edit-mov-person"
+                      required
+                    />
                   ) : null}
                   {!isIncome && linkedToLot && project.lotCount >= 1 ? (
                     <div className="space-y-2 rounded-md border border-border/70 bg-background/80 px-3 py-2 text-xs">

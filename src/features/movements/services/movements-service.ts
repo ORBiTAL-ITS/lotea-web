@@ -15,6 +15,8 @@ import {
 } from "firebase/firestore";
 import { db } from "@/shared/firebase/firebase-client";
 import type { Movement, MovementKind, MovementTimestamp } from "../models/movement-types";
+import { splitAmountEqually } from "../utils/split-amount";
+import { sortMovementsForDisplayList } from "../utils/movements-display";
 
 function movementsCol(companyId: string, projectId: string) {
   return collection(db, "companies", companyId, "projects", projectId, "movements");
@@ -45,7 +47,23 @@ export type CreateMovementInput = {
   lotNumber?: number | null;
   /** Ingreso con lote: valor de referencia del lote (opcional). */
   lotValue?: number | null;
+  /** Obligatorio si `linkedToLot` es true (imputación a lote). */
+  personId?: string | null;
+  personName?: string | null;
 };
+
+function resolvePersonForLot(
+  linkedToLot: boolean,
+  input: CreateMovementInput,
+): { personId: string | null; personName: string | null } {
+  if (!linkedToLot) return { personId: null, personName: null };
+  const pid = input.personId?.trim();
+  const pname = input.personName?.trim();
+  if (!pid || !pname) {
+    throw new Error("Selecciona la persona vinculada al lote.");
+  }
+  return { personId: pid, personName: pname };
+}
 
 function readTimestamp(raw: unknown): MovementTimestamp {
   if (raw == null) return null;
@@ -154,6 +172,13 @@ function mapMovementDoc(id: string, data: Record<string, unknown>): Movement {
     }
   }
 
+  const rawPid = data.personId;
+  const rawPname = data.personName;
+  const personId =
+    typeof rawPid === "string" && rawPid.trim().length > 0 ? rawPid.trim() : null;
+  const personName =
+    typeof rawPname === "string" && rawPname.trim().length > 0 ? rawPname.trim() : null;
+
   return {
     id,
     concept: String(data.concept ?? ""),
@@ -165,11 +190,9 @@ function mapMovementDoc(id: string, data: Record<string, unknown>): Movement {
     invoiceNumber,
     movementDate,
     createdAt,
+    personId,
+    personName,
   };
-}
-
-function effectiveSeconds(m: Movement): number {
-  return m.movementDate?.seconds ?? m.createdAt?.seconds ?? 0;
 }
 
 function sortMovementsChronoAsc(a: Movement, b: Movement): number {
@@ -239,8 +262,7 @@ export async function fetchMovements(companyId: string, projectId: string): Prom
   const q = query(movementsCol(companyId, projectId), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
   const list = snap.docs.map((d) => mapMovementDoc(d.id, d.data()));
-  list.sort((a, b) => effectiveSeconds(b) - effectiveSeconds(a));
-  return list;
+  return sortMovementsForDisplayList(list);
 }
 
 export async function createMovement(
@@ -269,11 +291,14 @@ export async function createMovement(
     lotNumber: number | null;
     lotValue: number | null;
     movementDate: Timestamp;
+    personId: string | null;
+    personName: string | null;
   };
 
   if (input.kind === "expense") {
     const linkedToLot = input.linkedToLot === true;
     let lotNumber: number | null = null;
+    const persons = resolvePersonForLot(linkedToLot, input);
     if (linkedToLot) {
       if (maxLot < 1) {
         throw new Error(
@@ -294,11 +319,14 @@ export async function createMovement(
       lotNumber: linkedToLot ? lotNumber : null,
       lotValue: null,
       movementDate: movementTs,
+      personId: persons.personId,
+      personName: persons.personName,
     };
   } else {
     const linkedToLot = input.linkedToLot === true;
     let lotNumber: number | null = null;
     let incomeLotValue: number | null = null;
+    const persons = resolvePersonForLot(linkedToLot, input);
 
     if (linkedToLot) {
       if (maxLot < 1) {
@@ -325,6 +353,8 @@ export async function createMovement(
       lotNumber,
       lotValue: linkedToLot ? incomeLotValue : null,
       movementDate: movementTs,
+      personId: persons.personId,
+      personName: persons.personName,
     };
   }
 
@@ -391,6 +421,7 @@ export async function updateMovement(
   if (input.kind === "expense") {
     const linkedToLot = input.linkedToLot === true;
     let lotNumber: number | null = null;
+    const persons = resolvePersonForLot(linkedToLot, input);
     if (linkedToLot) {
       if (maxLot < 1) {
         throw new Error(
@@ -411,6 +442,8 @@ export async function updateMovement(
       lotNumber: linkedToLot ? lotNumber : null,
       lotValue: null,
       movementDate: movementTs,
+      personId: persons.personId,
+      personName: persons.personName,
       ...(preserveInvoice !== undefined ? { invoiceNumber: preserveInvoice } : {}),
     });
     return;
@@ -419,6 +452,7 @@ export async function updateMovement(
   const linkedToLot = input.linkedToLot === true;
   let lotNumber: number | null = null;
   let incomeLotValue: number | null = null;
+  const persons = resolvePersonForLot(linkedToLot, input);
 
   if (linkedToLot) {
     if (maxLot < 1) {
@@ -445,8 +479,50 @@ export async function updateMovement(
     lotNumber,
     lotValue: linkedToLot ? incomeLotValue : null,
     movementDate: movementTs,
+    personId: persons.personId,
+    personName: persons.personName,
     ...(preserveInvoice !== undefined ? { invoiceNumber: preserveInvoice } : {}),
   });
+}
+
+/**
+ * Crea varios movimientos (misma persona, concepto y fecha) repartiendo el monto total en COP
+ * en partes lo más iguales posible entre los lotes indicados.
+ */
+export async function createMovementsSplitEqually(
+  companyId: string,
+  projectId: string,
+  input: Omit<CreateMovementInput, "lotNumber"> & {
+    lotNumbers: number[];
+  },
+): Promise<void> {
+  const { lotNumbers, ...base } = input;
+  const raw = [...new Set(lotNumbers)]
+    .filter((n) => Number.isInteger(n) && n >= 1)
+    .sort((a, b) => a - b);
+  if (raw.length === 0) {
+    throw new Error("Selecciona al menos un lote.");
+  }
+  const total = Math.round(base.amount);
+  if (!Number.isFinite(total) || total <= 0) {
+    throw new Error("El monto debe ser mayor que cero.");
+  }
+  if (total < raw.length) {
+    throw new Error(
+      `El monto debe ser al menos ${raw.length.toLocaleString("es-CO")} COP (1 COP por cada lote seleccionado).`,
+    );
+  }
+  const parts = splitAmountEqually(total, raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    const ln = raw[i]!;
+    const amt = parts[i]!;
+    await createMovement(companyId, projectId, {
+      ...base,
+      amount: amt,
+      linkedToLot: true,
+      lotNumber: ln,
+    });
+  }
 }
 
 export async function deleteMovement(

@@ -2,13 +2,17 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
-import { db } from "@/shared/firebase/firebase-client";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth, db } from "@/shared/firebase/firebase-client";
+import { GASTOS_PROJECT_DOC_ID } from "../constants/gastos-project";
 import type { Project, ProjectStatus } from "../models/project-types";
 
 function projectsCol(companyId: string) {
@@ -87,29 +91,134 @@ export async function updateProject(
   await updateDoc(doc(db, "companies", companyId, "projects", projectId), patch);
 }
 
-export async function fetchProjects(companyId: string): Promise<Project[]> {
-  const q = query(projectsCol(companyId), orderBy("createdAt", "desc"));
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => {
-    const data = d.data();
-    const rawLots = data.lotCount;
-    const lotCount =
-      typeof rawLots === "number" && Number.isFinite(rawLots) && rawLots >= 0
-        ? Math.floor(rawLots)
-        : 0;
+function mapProjectDoc(id: string, data: Record<string, unknown>): Project {
+  const rawLots = data.lotCount;
+  const lotCount =
+    typeof rawLots === "number" && Number.isFinite(rawLots) && rawLots >= 0
+      ? Math.floor(rawLots)
+      : 0;
 
-    return {
-      id: d.id,
-      name: String(data.name ?? ""),
-      code: String(data.code ?? ""),
-      status: (data.status === "closed" ? "closed" : "active") as ProjectStatus,
-      lotCount,
-      createdAt: data.createdAt ?? null,
-    };
+  return {
+    id,
+    name: String(data.name ?? ""),
+    code: String(data.code ?? ""),
+    status: (data.status === "closed" ? "closed" : "active") as ProjectStatus,
+    lotCount,
+    createdAt: (data.createdAt as Project["createdAt"]) ?? null,
+  };
+}
+
+export async function fetchProjects(companyId: string): Promise<Project[]> {
+  const mapSnap = (snap: Awaited<ReturnType<typeof getDocs>>) =>
+    snap.docs.map((d) => mapProjectDoc(d.id, d.data() as Record<string, unknown>));
+
+  try {
+    const q = query(projectsCol(companyId), orderBy("createdAt", "desc"));
+    const snap = await getDocs(q);
+    return mapSnap(snap);
+  } catch {
+    /** Sin índice o datos antiguos sin `createdAt`: lista completa y orden local. */
+    const snap = await getDocs(projectsCol(companyId));
+    const list = mapSnap(snap);
+    return list.sort((a, b) => {
+      const sa = a.createdAt?.seconds ?? 0;
+      const sb = b.createdAt?.seconds ?? 0;
+      if (sa !== sb) return sb - sa;
+      return a.name.localeCompare(b.name, "es");
+    });
+  }
+}
+
+/** Espera a que Firebase Auth tenga usuario (p. ej. tras recargar la página). */
+function waitForAuthReady(maxMs = 12000): Promise<void> {
+  if (auth.currentUser) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(), maxMs);
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        clearTimeout(t);
+        unsub();
+        resolve();
+      }
+    });
   });
+}
+
+async function ensureGastosProjectViaServer(companyId: string): Promise<boolean> {
+  await waitForAuthReady();
+  const user = auth.currentUser;
+  if (!user) return false;
+  let token: string;
+  try {
+    token = await user.getIdToken(true);
+  } catch {
+    return false;
+  }
+  try {
+    const res = await fetch("/api/company/ensure-gastos", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ companyId }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean };
+    if (res.ok && data.ok === true) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Garantiza el documento interno de «Gasto» (numeración E- aparte).
+ * Orden: lectura → API (Admin, ignora reglas de cliente) → setDoc en cliente → reintento API si hace falta.
+ */
+export async function ensureGastosProject(companyId: string): Promise<Project | null> {
+  await waitForAuthReady();
+
+  const ref = doc(db, "companies", companyId, "projects", GASTOS_PROJECT_DOC_ID);
+
+  async function readMapped(): Promise<Project | null> {
+    try {
+      const s = await getDoc(ref);
+      if (!s.exists()) return null;
+      return mapProjectDoc(s.id, s.data() as Record<string, unknown>);
+    } catch {
+      return null;
+    }
+  }
+
+  let p = await readMapped();
+  if (p) return p;
+
+  try {
+    await auth.currentUser?.getIdToken(true);
+  } catch {
+    /* vacío */
+  }
+
+  await ensureGastosProjectViaServer(companyId);
+  p = await readMapped();
+  if (p) return p;
+
+  try {
+    await setDoc(ref, {
+      name: "Gastos",
+      code: "GASTOS",
+      status: "active",
+      lotCount: 0,
+      createdAt: serverTimestamp(),
+    });
+  } catch {
+    await ensureGastosProjectViaServer(companyId);
+  }
+
+  return readMapped();
 }
 
 export async function countProjects(companyId: string): Promise<number> {
   const snap = await getDocs(projectsCol(companyId));
-  return snap.size;
+  return snap.docs.filter((d) => d.id !== GASTOS_PROJECT_DOC_ID).length;
 }

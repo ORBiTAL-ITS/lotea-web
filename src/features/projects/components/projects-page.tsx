@@ -13,6 +13,7 @@ import { useAppSelector } from "@/shared/store/hooks";
 import { selectSessionUser } from "@/features/session/models/session-selectors";
 import { fetchCompanyById } from "@/features/companies/services/companies-service";
 import { CompanyPickerSection } from "@/features/companies/components/company-picker-section";
+import { isGastosProjectId } from "../constants/gastos-project";
 import { fetchProjects } from "../services/projects-service";
 import type { Project } from "../models/project-types";
 import { EditProjectDialog } from "./edit-project-dialog";
@@ -35,7 +36,8 @@ export function ProjectsPage() {
     }
     setLoading(true);
     try {
-      setList(await fetchProjects(companyId));
+      const raw = await fetchProjects(companyId);
+      setList(raw.filter((p) => !isGastosProjectId(p.id)));
     } catch {
       setList([]);
     } finally {
