@@ -12,6 +12,8 @@ export type InvoicePrintSheetProps = {
   projectName: string;
   projectCode: string;
   movement: Movement;
+  /** Si el usuario escribe un nombre, tiene prioridad sobre `movement.personName`. */
+  personDisplayOverride?: string;
   /** Texto opcional impreso bajo el concepto de firma. */
   delivererCaption?: string;
   receiverCaption?: string;
@@ -38,10 +40,15 @@ export function InvoicePrintSheet({
   projectName,
   projectCode,
   movement,
+  personDisplayOverride = "",
   delivererCaption = "",
   receiverCaption = "",
 }: InvoicePrintSheetProps) {
   const inv = formatMovementInvoice(movement);
+  const personResolved =
+    personDisplayOverride.trim() ||
+    movement.personName?.trim() ||
+    "";
   const kind = kindTitle(movement.kind);
   const lotLine =
     movement.linkedToLot && movement.lotNumber != null
@@ -107,12 +114,8 @@ export function InvoicePrintSheet({
           <span className="font-medium text-zinc-500">Imputación</span>
           <span className="text-zinc-800">{lotLine}</span>
 
-          {movement.linkedToLot && movement.personName?.trim() ? (
-            <>
-              <span className="font-medium text-zinc-500">Persona</span>
-              <span className="text-zinc-800">{movement.personName.trim()}</span>
-            </>
-          ) : null}
+          <span className="font-medium text-zinc-500">Persona</span>
+          <span className="text-zinc-800">{personResolved || "—"}</span>
 
           {movement.kind === "income" &&
           movement.linkedToLot &&

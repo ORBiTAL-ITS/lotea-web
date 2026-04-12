@@ -6,10 +6,14 @@ import type { ServiceAccount } from "firebase-admin";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
-function loadServiceAccount(): ServiceAccount {
+/**
+ * Cuenta de servicio explícita (desarrollo local o CI).
+ * En Firebase Hosting + funciones generadas para Next.js, suele usarse ADC (`initializeApp()` sin credencial).
+ */
+function tryLoadServiceAccount(): (ServiceAccount & { project_id?: string }) | null {
   const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   if (rawJson) {
-    return JSON.parse(rawJson) as ServiceAccount;
+    return JSON.parse(rawJson) as ServiceAccount & { project_id?: string };
   }
   const relPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
   if (relPath) {
@@ -17,11 +21,11 @@ function loadServiceAccount(): ServiceAccount {
     if (!existsSync(abs)) {
       throw new Error(`No se encontró el archivo: ${abs}`);
     }
-    return JSON.parse(readFileSync(abs, "utf8")) as ServiceAccount;
+    return JSON.parse(readFileSync(abs, "utf8")) as ServiceAccount & {
+      project_id?: string;
+    };
   }
-  throw new Error(
-    "Falta FIREBASE_SERVICE_ACCOUNT_JSON o FIREBASE_SERVICE_ACCOUNT_PATH (solo servidor).",
-  );
+  return null;
 }
 
 let app: App | undefined;
@@ -33,13 +37,17 @@ export function getFirebaseAdminApp(): App {
     app = existing;
     return app;
   }
-  const sa = loadServiceAccount() as ServiceAccount & { project_id?: string };
-  /** Obligatorio para que Auth/Firestore apunten al mismo proyecto que el JSON (evita 5 NOT_FOUND / permisos raros). */
-  const projectId = sa.project_id?.trim();
-  if (!projectId) {
-    throw new Error("La cuenta de servicio no incluye project_id.");
+  const sa = tryLoadServiceAccount();
+  if (sa) {
+    const projectId = sa.project_id?.trim();
+    if (!projectId) {
+      throw new Error("La cuenta de servicio no incluye project_id.");
+    }
+    app = initializeApp({ credential: cert(sa), projectId });
+    return app;
   }
-  app = initializeApp({ credential: cert(sa), projectId });
+  /** Producción en Google Cloud: credenciales por defecto (p. ej. Cloud Functions para Next.js). */
+  app = initializeApp();
   return app;
 }
 

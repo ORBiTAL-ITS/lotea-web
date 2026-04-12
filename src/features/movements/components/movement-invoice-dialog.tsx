@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useReactToPrint } from "react-to-print";
 import { Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,32 +33,65 @@ export function MovementInvoiceDialog({
   project,
   movement,
 }: MovementInvoiceDialogProps) {
+  const [personLine, setPersonLine] = useState("");
   const [delivererCaption, setDelivererCaption] = useState("");
   const [receiverCaption, setReceiverCaption] = useState("");
 
+  const printAreaRef = useRef<HTMLDivElement>(null);
+
+  const handlePrint = useReactToPrint({
+    contentRef: printAreaRef,
+    documentTitle: movement
+      ? `Comprobante-${formatMovementInvoice(movement)}`
+      : "Comprobante",
+    pageStyle: `
+      @page { size: letter portrait; margin: 0.45in; }
+    `,
+  });
+
   useEffect(() => {
     if (!open) {
+      setPersonLine("");
       setDelivererCaption("");
       setReceiverCaption("");
+      return;
     }
-  }, [open]);
+    if (movement) {
+      setPersonLine(movement.personName?.trim() ?? "");
+    }
+  }, [open, movement]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[min(92vh,900px)] w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-3xl lg:max-w-4xl print:max-h-none print:max-w-none print:overflow-visible print:rounded-none print:shadow-none print:ring-0"
+        className="max-h-[min(92vh,900px)] w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-3xl lg:max-w-4xl"
         showCloseButton
       >
         {movement ? (
           <>
-            <div className="no-print space-y-4">
+            <div className="space-y-4">
               <DialogHeader>
                 <DialogTitle>Comprobante {formatMovementInvoice(movement)}</DialogTitle>
                 <DialogDescription className="text-balance">
-                  Cada movimiento tiene su numeración (I-… / E-…). Puedes imprimir el comprobante; las
-                  firmas son opcionales.
+                  Solo se imprime la hoja del comprobante (vista previa abajo). La persona se rellena desde
+                  el movimiento si existe; puedes editarla. Las firmas son opcionales.
                 </DialogDescription>
               </DialogHeader>
+              <div className="space-y-2">
+                <Label htmlFor="mov-inv-person">Persona en el comprobante</Label>
+                <Input
+                  id="mov-inv-person"
+                  value={personLine}
+                  onChange={(e) => setPersonLine(e.target.value)}
+                  placeholder="Nombre o razón social (opcional)"
+                  className="h-10"
+                  autoComplete="name"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Si el movimiento ya tiene persona vinculada, se rellena sola; si no, escribe el nombre que
+                  debe salir impreso.
+                </p>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="mov-inv-deliver">Quien entrega (opcional)</Label>
@@ -82,20 +116,30 @@ export function MovementInvoiceDialog({
                   />
                 </div>
               </div>
-              <Button type="button" className="gap-2" onClick={() => window.print()}>
+              <Button
+                type="button"
+                className="gap-2"
+                onClick={() => {
+                  void handlePrint();
+                }}
+              >
                 <Printer className="h-4 w-4" />
                 Imprimir comprobante
               </Button>
             </div>
-            <div className="mt-6 flex justify-center print:mt-0">
-              <InvoicePrintSheet
-                companyName={companyName}
-                projectName={project.name}
-                projectCode={project.code}
-                movement={movement}
-                delivererCaption={delivererCaption.trim()}
-                receiverCaption={receiverCaption.trim()}
-              />
+
+            <div className="mt-6 flex justify-center border-t border-border/60 pt-6">
+              <div ref={printAreaRef} className="inline-block">
+                <InvoicePrintSheet
+                  companyName={companyName}
+                  projectName={project.name}
+                  projectCode={project.code}
+                  movement={movement}
+                  personDisplayOverride={personLine}
+                  delivererCaption={delivererCaption.trim()}
+                  receiverCaption={receiverCaption.trim()}
+                />
+              </div>
             </div>
           </>
         ) : null}
