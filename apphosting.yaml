@@ -1,6 +1,6 @@
-# Firebase App Hosting — proyecto Lotea (lotea-3e634).
-# Variables NEXT_PUBLIC_* para el build; deben coincidir con Console → Project settings.
-# Si cambias de proyecto, actualiza aquí o en la consola (la consola tiene prioridad).
+# Firebase App Hosting — ajustes de runtime.
+# Las variables NEXT_PUBLIC_* y secretos: configúralas en
+# Firebase Console → App Hosting → tu backend → Environment (no commitear valores reales).
 #
 # Documentación: https://firebase.google.com/docs/app-hosting/configure
 
@@ -9,40 +9,3 @@ runConfig:
   maxInstances: 10
   cpu: 1
   memoryMiB: 512
-
-env:
-  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
-    value: AIzaSyD-zpInp8MG1KXphYXFNLMNFDhIzMr1kDM
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
-    value: lotea-3e634.firebaseapp.com
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
-    value: lotea-3e634
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
-    value: lotea-3e634.firebasestorage.app
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
-    value: "71714716902"
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
-    value: 1:71714716902:web:675eb763be3151e6564f27
-    availability:
-      - BUILD
-      - RUNTIME
-  - variable: NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
-    value: G-1NMSE2L2FY
-    availability:
-      - BUILD
-      - RUNTIME
