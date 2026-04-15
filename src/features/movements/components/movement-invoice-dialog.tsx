@@ -15,13 +15,34 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { InvoicePrintSheet } from "@/features/invoicing/components/invoice-print-sheet";
 import type { Project } from "@/features/projects/models/project-types";
+import { fetchProjectById } from "@/features/projects/services/projects-service";
 import { getProjectInvoiceImageSrc } from "@/features/projects/utils/project-invoice-image";
 import type { Movement } from "../models/movement-types";
 import { formatMovementInvoice } from "../utils/movements-display";
 
+function waitForImages(container: HTMLElement | null): Promise<void> {
+  if (!container) return Promise.resolve();
+  const imgs = Array.from(container.querySelectorAll("img"));
+  return Promise.all(
+    imgs.map(
+      (img) =>
+        new Promise<void>((resolve) => {
+          if (img.complete && img.naturalHeight !== 0) {
+            resolve();
+            return;
+          }
+          const done = () => resolve();
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+        }),
+    ),
+  ).then(() => undefined);
+}
+
 export type MovementInvoiceDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  companyId: string | null;
   companyName: string | null;
   project: Project;
   movement: Movement | null;
@@ -30,6 +51,7 @@ export type MovementInvoiceDialogProps = {
 export function MovementInvoiceDialog({
   open,
   onOpenChange,
+  companyId,
   companyName,
   project,
   movement,
@@ -37,6 +59,8 @@ export function MovementInvoiceDialog({
   const [personLine, setPersonLine] = useState("");
   const [delivererCaption, setDelivererCaption] = useState("");
   const [receiverCaption, setReceiverCaption] = useState("");
+  /** Proyecto re-leído al abrir para tener `invoiceImageData` o URL actual al imprimir. */
+  const [projectForPrint, setProjectForPrint] = useState<Project>(project);
 
   const printAreaRef = useRef<HTMLDivElement>(null);
 
@@ -47,8 +71,16 @@ export function MovementInvoiceDialog({
       : "Comprobante",
     pageStyle: `
       @page { size: letter portrait; margin: 0.45in; }
+      img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     `,
+    onBeforePrint: async () => {
+      await waitForImages(printAreaRef.current);
+    },
   });
+
+  useEffect(() => {
+    setProjectForPrint(project);
+  }, [project]);
 
   useEffect(() => {
     if (!open) {
@@ -61,6 +93,17 @@ export function MovementInvoiceDialog({
       setPersonLine(movement.personName?.trim() ?? "");
     }
   }, [open, movement]);
+
+  useEffect(() => {
+    if (!open || !companyId || !movement) return;
+    let cancelled = false;
+    void fetchProjectById(companyId, project.id).then((p) => {
+      if (!cancelled && p) setProjectForPrint(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, movement, companyId, project.id]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -133,9 +176,9 @@ export function MovementInvoiceDialog({
               <div ref={printAreaRef} className="inline-block">
                 <InvoicePrintSheet
                   companyName={companyName}
-                  projectName={project.name}
-                  projectCode={project.code}
-                  projectImageUrl={getProjectInvoiceImageSrc(project)}
+                  projectName={projectForPrint.name}
+                  projectCode={projectForPrint.code}
+                  projectImageSrc={getProjectInvoiceImageSrc(projectForPrint)}
                   movement={movement}
                   personDisplayOverride={personLine}
                   delivererCaption={delivererCaption.trim()}

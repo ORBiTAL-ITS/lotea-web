@@ -11,6 +11,9 @@ export type InvoicePrintSheetProps = {
   companyName: string | null;
   projectName: string;
   projectCode: string;
+  /** Imagen del proyecto (URL https o data:image del catálogo). Si no hay, no se muestra bloque. */
+  projectImageSrc?: string | null;
+  /** @deprecated Usar `projectImageSrc` (mismo valor: URL o data URL). */
   projectImageUrl?: string | null;
   movement: Movement;
   /** Si el usuario escribe un nombre, tiene prioridad sobre `movement.personName`. */
@@ -40,12 +43,17 @@ export function InvoicePrintSheet({
   companyName,
   projectName,
   projectCode,
+  projectImageSrc = null,
   projectImageUrl = null,
   movement,
   personDisplayOverride = "",
   delivererCaption = "",
   receiverCaption = "",
 }: InvoicePrintSheetProps) {
+  const projectImg =
+    (projectImageSrc && String(projectImageSrc).trim()) ||
+    (projectImageUrl && String(projectImageUrl).trim()) ||
+    null;
   const inv = formatMovementInvoice(movement);
   const personResolved =
     personDisplayOverride.trim() ||
@@ -82,12 +90,14 @@ export function InvoicePrintSheet({
             <p className="mt-0.5 text-[11px] text-zinc-600">Comprobante de movimiento</p>
           </div>
           <div className="shrink-0 text-right">
-            {projectImageUrl ? (
+            {projectImg ? (
               // eslint-disable-next-line @next/next/no-img-element -- impresión: img evita problemas con optimización
               <img
-                src={projectImageUrl}
-                alt={`Imagen de ${projectName}`}
-                className="mb-2 ml-auto h-10 w-auto max-w-[150px] rounded border border-zinc-200 object-contain"
+                src={projectImg}
+                alt={`Imagen del proyecto ${projectName}`}
+                loading="eager"
+                decoding="sync"
+                className="mb-2 ml-auto h-12 w-auto max-w-[min(180px,42vw)] rounded border border-zinc-300 object-contain object-center print:h-14"
               />
             ) : null}
             <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">

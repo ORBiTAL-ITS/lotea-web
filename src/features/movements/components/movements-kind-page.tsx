@@ -1045,6 +1045,7 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
                       onOpenChange={open => {
                         if (!open) setInvoiceMovement(null)
                       }}
+                      companyId={companyId}
                       companyName={companyName}
                       project={loadedProject}
                       movement={invoiceMovement}
