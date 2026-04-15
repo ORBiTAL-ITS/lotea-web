@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  updateDoc,
   serverTimestamp,
   type DocumentData,
 } from "firebase/firestore";
@@ -15,6 +16,22 @@ function mapCompanyDoc(id: string, data: DocumentData): Company {
   return {
     id,
     name: String(data.name ?? "Sin nombre"),
+    legalName:
+      typeof data.legalName === "string" && data.legalName.trim().length > 0
+        ? data.legalName.trim()
+        : null,
+    nit:
+      typeof data.nit === "string" && data.nit.trim().length > 0
+        ? data.nit.trim()
+        : null,
+    phone:
+      typeof data.phone === "string" && data.phone.trim().length > 0
+        ? data.phone.trim()
+        : null,
+    email:
+      typeof data.email === "string" && data.email.trim().length > 0
+        ? data.email.trim()
+        : null,
     createdAt: data.createdAt ?? null,
   };
 }
@@ -58,4 +75,45 @@ export async function createCompany(name: string, createdByUid: string): Promise
     createdByUid,
   });
   return ref.id;
+}
+
+export type UpdateCompanyInput = {
+  name?: string;
+  legalName?: string | null;
+  nit?: string | null;
+  phone?: string | null;
+  email?: string | null;
+};
+
+export async function updateCompany(companyId: string, input: UpdateCompanyInput): Promise<void> {
+  const patch: Record<string, unknown> = {};
+
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (!name) throw new Error("El nombre de la empresa es obligatorio.");
+    patch.name = name;
+  }
+
+  if (input.legalName !== undefined) {
+    const value = input.legalName?.trim();
+    patch.legalName = value ? value : null;
+  }
+
+  if (input.nit !== undefined) {
+    const value = input.nit?.trim();
+    patch.nit = value ? value : null;
+  }
+
+  if (input.phone !== undefined) {
+    const value = input.phone?.trim();
+    patch.phone = value ? value : null;
+  }
+
+  if (input.email !== undefined) {
+    const value = input.email?.trim();
+    patch.email = value ? value : null;
+  }
+
+  if (Object.keys(patch).length === 0) return;
+  await updateDoc(doc(db, "companies", companyId), patch);
 }

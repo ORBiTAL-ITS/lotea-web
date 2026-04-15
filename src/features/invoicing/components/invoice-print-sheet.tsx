@@ -11,6 +11,7 @@ export type InvoicePrintSheetProps = {
   companyName: string | null;
   projectName: string;
   projectCode: string;
+  projectImageUrl?: string | null;
   movement: Movement;
   /** Si el usuario escribe un nombre, tiene prioridad sobre `movement.personName`. */
   personDisplayOverride?: string;
@@ -39,6 +40,7 @@ export function InvoicePrintSheet({
   companyName,
   projectName,
   projectCode,
+  projectImageUrl = null,
   movement,
   personDisplayOverride = "",
   delivererCaption = "",
@@ -80,6 +82,14 @@ export function InvoicePrintSheet({
             <p className="mt-0.5 text-[11px] text-zinc-600">Comprobante de movimiento</p>
           </div>
           <div className="shrink-0 text-right">
+            {projectImageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- impresión: img evita problemas con optimización
+              <img
+                src={projectImageUrl}
+                alt={`Imagen de ${projectName}`}
+                className="mb-2 ml-auto h-10 w-auto max-w-[150px] rounded border border-zinc-200 object-contain"
+              />
+            ) : null}
             <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Documento N.º
             </p>
@@ -144,7 +154,7 @@ export function InvoicePrintSheet({
       <footer className="mt-auto shrink-0 border-t border-zinc-200 pt-4">
         <div className="grid grid-cols-2 gap-8">
           <div className="text-center">
-            <div className="mb-1 min-h-[2.75rem] border-b border-zinc-800">
+            <div className="mb-1 min-h-11 border-b border-zinc-800">
               {delivererCaption ? (
                 <p className="pb-1 text-xs font-medium text-zinc-800">{delivererCaption}</p>
               ) : null}
@@ -155,7 +165,7 @@ export function InvoicePrintSheet({
             <p className="text-[10px] text-zinc-400">Nombre, cargo o razón social</p>
           </div>
           <div className="text-center">
-            <div className="mb-1 min-h-[2.75rem] border-b border-zinc-800">
+            <div className="mb-1 min-h-11 border-b border-zinc-800">
               {receiverCaption ? (
                 <p className="pb-1 text-xs font-medium text-zinc-800">{receiverCaption}</p>
               ) : null}

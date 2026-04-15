@@ -1,0 +1,136 @@
+rules_version = '2';
+
+/**
+ * Claims esperados (Auth custom claims + sesión en app):
+ * - Master: request.auth.token.role == "master"
+ * - Empresa: request.auth.token.role == "company_user",
+ *            request.auth.token.companyId,
+ *            request.auth.token.companyRole in ["admin", "viewer"]
+ *
+ * Despliegue: desde la carpeta `web/`, con Firebase CLI:
+ *   firebase deploy --only firestore:rules
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMaster() {
+      return signedIn() && request.auth.token.role == "master";
+    }
+
+    function userCompanyId() {
+      return request.auth.token.companyId;
+    }
+
+    function isCompanyUser() {
+      return signedIn()
+        && request.auth.token.role == "company_user"
+        && userCompanyId() is string
+        && userCompanyId().size() > 0;
+    }
+
+    function isCompanyAdmin() {
+      return isCompanyUser() && request.auth.token.companyRole == "admin";
+    }
+
+    function isCompanyViewer() {
+      return isCompanyUser() && request.auth.token.companyRole == "viewer";
+    }
+
+    /** Master puede cualquier empresa; usuario de empresa solo la suya. */
+    function belongsToCompany(companyId) {
+      return isMaster() || (isCompanyUser() && userCompanyId() == companyId);
+    }
+
+    function canReadCompany(companyId) {
+      return belongsToCompany(companyId) && (isMaster() || isCompanyUser());
+    }
+
+    function canWriteCompanyData(companyId) {
+      return belongsToCompany(companyId) && (isMaster() || isCompanyAdmin());
+    }
+
+    match /companies/{companyId} {
+      allow read: if canReadCompany(companyId);
+      /** Alta de empresa desde cliente: solo master (bootstrap por API usa Admin SDK). */
+      allow create: if isMaster();
+      allow update, delete: if canWriteCompanyData(companyId);
+
+      match /people/{personId} {
+        allow read: if canReadCompany(companyId);
+        allow create, update, delete: if canWriteCompanyData(companyId);
+      }
+
+      match /contractors/{contractorId} {
+        allow read: if canReadCompany(companyId);
+        allow create, update, delete: if canWriteCompanyData(companyId);
+      }
+
+      /**
+       * Bitácora de borrados: solo el master puede leer.
+       * Los administradores de empresa pueden crear entradas al hacer soft-delete desde la app.
+       */
+      match /auditDeletedRecords/{auditId} {
+        allow read: if belongsToCompany(companyId) && isMaster();
+        allow create: if canWriteCompanyData(companyId);
+        allow update, delete: if belongsToCompany(companyId) && isMaster();
+      }
+
+      match /projects/{projectId} {
+        allow read: if canReadCompany(companyId);
+        allow create, update, delete: if canWriteCompanyData(companyId);
+
+        match /movements/{movementId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update: if canWriteCompanyData(companyId);
+          allow delete: if false;
+        }
+
+        match /invoiceCounters/{counterId} {
+          allow read, write: if canWriteCompanyData(companyId);
+        }
+
+        match /lots/{lotId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+
+        match /lotTransfers/{transferId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+
+        match /lotOwnershipHistory/{eventId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+
+        match /lotReturns/{returnId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+
+        match /ownerPayments/{paymentId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+
+        match /monthlyRefunds/{refundId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+
+        match /workerPayments/{paymentId} {
+          allow read: if canReadCompany(companyId);
+          allow create, update, delete: if canWriteCompanyData(companyId);
+        }
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

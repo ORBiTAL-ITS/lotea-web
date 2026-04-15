@@ -44,11 +44,25 @@ import {
 } from "../utils/lot-ledger";
 import { lotValueHintFromProjectIncomes } from "../utils/lot-value-hint";
 import { PersonPickerField, type PersonPickerValue } from "@/features/people/components/person-picker-field";
+import { fetchLotTransfers, fetchProjectLots } from "@/features/lots/services/lots-service";
+import type { Lot } from "@/features/lots/models/lot-types";
+import type { LotTransfer } from "@/features/lots/models/lot-types";
 import {
   buildLotOwnerMap,
   freeLotNumbers,
+  lotNumbersAssociableToPerson,
   lotNumbersForPerson,
 } from "../utils/lot-person-assignment";
+import {
+  createMonthlyRefund,
+  createWorkerPayment,
+} from "@/features/finance/services/finance-service";
+import {
+  ContractorPickerField,
+  type ContractorPickerValue,
+} from "@/features/contractors/components/contractor-picker-field";
+
+type ExpenseMode = "standard" | "devolucion" | "trabajador";
 
 function todayLocalISODate(): string {
   const d = new Date();
@@ -80,6 +94,8 @@ export type QuickNewMovementButtonProps = {
   /** Movimientos ya cargados en la página (mismo proyecto que `syncedProjectId`) para validar egresos por lote sin otra lectura. */
   syncedProjectId?: string | null;
   syncedProjectMovements?: Movement[];
+  /** Lotes del proyecto (p. ej. tras Buscar en Ingresos) para listar titulares sin elegir número a mano. */
+  syncedProjectLots?: Lot[];
 };
 
 export function QuickNewMovementButton({
@@ -90,6 +106,7 @@ export function QuickNewMovementButton({
   pageLoadedProject,
   syncedProjectId,
   syncedProjectMovements,
+  syncedProjectLots,
 }: QuickNewMovementButtonProps) {
   const sessionUser = useAppSelector(selectSessionUser);
 
@@ -108,9 +125,21 @@ export function QuickNewMovementButton({
   const [lotValueStr, setLotValueStr] = useState("");
   const [person, setPerson] = useState<PersonPickerValue | null>(null);
   const [modalProjectMovements, setModalProjectMovements] = useState<Movement[]>([]);
+  const [modalProjectLotTransfers, setModalProjectLotTransfers] = useState<LotTransfer[]>([]);
   const [loadingModalProjectMovements, setLoadingModalProjectMovements] = useState(false);
   /** Ingreso: false = abono entre lotes ya de esta persona; true = solo lotes libres. */
   const [incomeUseFreeLot, setIncomeUseFreeLot] = useState(true);
+  /** Ingreso: fila elegida en catálogo Lotes (titular + lote); evita elegir número a mano. */
+  const [incomePickedTitular, setIncomePickedTitular] = useState<{
+    lotNumber: number;
+    personId: string;
+    personName: string;
+  } | null>(null);
+  const [modalLots, setModalLots] = useState<Lot[]>([]);
+  const [loadingModalLots, setLoadingModalLots] = useState(false);
+  /** Egreso en proyecto con lotes: movimiento estándar, devolución (dueño/cedente) o pago a trabajador. */
+  const [expenseMode, setExpenseMode] = useState<ExpenseMode>("standard");
+  const [workerContractor, setWorkerContractor] = useState<ContractorPickerValue | null>(null);
 
   const isMaster = sessionUser?.globalRole === "master";
   const isViewer = sessionUser?.companyRole === "viewer";
@@ -129,10 +158,14 @@ export function QuickNewMovementButton({
     [modalProjectMovements],
   );
 
-  const lotsForSelectedPerson = useMemo(
-    () => (person?.id ? lotNumbersForPerson(modalProjectMovements, person.id) : []),
-    [modalProjectMovements, person?.id],
-  );
+  /** Ingresos: solo lotes con movimientos de la persona. Egresos: además lotes donde fue titular y cedió (ex titular). */
+  const lotsForSelectedPerson = useMemo(() => {
+    if (!person?.id) return [];
+    if (kind === "income") {
+      return lotNumbersForPerson(modalProjectMovements, person.id);
+    }
+    return lotNumbersAssociableToPerson(modalProjectMovements, modalProjectLotTransfers, person.id);
+  }, [kind, modalProjectMovements, modalProjectLotTransfers, person?.id]);
 
   const projectSelectItems = useMemo(() => {
     const rows = projects.map((p) => ({
@@ -164,11 +197,7 @@ export function QuickNewMovementButton({
       } catch {
         fetched = [];
       }
-      if (kind === "expense") {
-        setProjects(fetched.filter((p) => !isGastosProjectId(p.id)));
-      } else {
-        setProjects(fetched);
-      }
+      setProjects(fetched.filter((p) => !isGastosProjectId(p.id)));
     } finally {
       setLoadingProjects(false);
     }
@@ -190,24 +219,62 @@ export function QuickNewMovementButton({
   }, [open, pageProjectId, projects]);
 
   useEffect(() => {
+    if (!open || kind !== "expense") return;
+    if (expenseMode === "trabajador") {
+      setLinkedToLot(false);
+      setSelectedLotNos([]);
+      setPerson(null);
+      setWorkerContractor(null);
+    }
+  }, [open, kind, expenseMode]);
+
+  useEffect(() => {
+    if (!open || !modalProjectId) return;
+    if (isGastosProjectId(modalProjectId)) {
+      setExpenseMode("standard");
+    }
+  }, [open, modalProjectId]);
+
+  useEffect(() => {
     if (!open || !companyId || !modalProjectId) {
       setModalProjectMovements([]);
+      setModalProjectLotTransfers([]);
       setLoadingModalProjectMovements(false);
       return;
     }
+    if (isGastosProjectId(modalProjectId)) {
+      setModalProjectLotTransfers([]);
+    }
+    const loadTransfers = () =>
+      isGastosProjectId(modalProjectId)
+        ? Promise.resolve([] as LotTransfer[])
+        : fetchLotTransfers(companyId, modalProjectId).catch(() => [] as LotTransfer[]);
+
     if (syncedProjectId === modalProjectId && syncedProjectMovements) {
       setModalProjectMovements(syncedProjectMovements);
       setLoadingModalProjectMovements(false);
-      return;
+      let cancelled = false;
+      void loadTransfers().then((t) => {
+        if (!cancelled) setModalProjectLotTransfers(t);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     let cancelled = false;
     setLoadingModalProjectMovements(true);
-    void fetchMovements(companyId, modalProjectId)
-      .then((list) => {
-        if (!cancelled) setModalProjectMovements(list);
+    void Promise.all([fetchMovements(companyId, modalProjectId), loadTransfers()])
+      .then(([list, transfers]) => {
+        if (!cancelled) {
+          setModalProjectMovements(list);
+          setModalProjectLotTransfers(transfers);
+        }
       })
       .catch(() => {
-        if (!cancelled) setModalProjectMovements([]);
+        if (!cancelled) {
+          setModalProjectMovements([]);
+          setModalProjectLotTransfers([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoadingModalProjectMovements(false);
@@ -219,6 +286,34 @@ export function QuickNewMovementButton({
 
   const isIncome = kind === "income";
 
+  useEffect(() => {
+    if (!open || !isIncome || !modalProjectId || isGastosProjectId(modalProjectId)) {
+      setModalLots([]);
+      setLoadingModalLots(false);
+      return;
+    }
+    if (syncedProjectId === modalProjectId && syncedProjectLots !== undefined) {
+      setModalLots(syncedProjectLots);
+      setLoadingModalLots(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingModalLots(true);
+    void fetchProjectLots(companyId, modalProjectId)
+      .then((lots) => {
+        if (!cancelled) setModalLots(lots);
+      })
+      .catch(() => {
+        if (!cancelled) setModalLots([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingModalLots(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isIncome, companyId, modalProjectId, syncedProjectId, syncedProjectLots]);
+
   const freeLotsForProject = useMemo(
     () =>
       modalProject && modalProject.lotCount >= 1
@@ -227,10 +322,46 @@ export function QuickNewMovementButton({
     [modalProject, lotOwnerByLot],
   );
 
+  /** Titulares con datos en el catálogo de lotes (página Lotes). */
+  const incomeTitularRows = useMemo(() => {
+    if (!isIncome) return [];
+    return modalLots
+      .filter((l) => {
+        const id = typeof l.currentOwnerId === "string" ? l.currentOwnerId.trim() : "";
+        const name = (l.currentOwnerName ?? "").trim();
+        return id.length > 0 && name.length > 0 && l.lotNumber >= 1;
+      })
+      .sort((a, b) => a.lotNumber - b.lotNumber);
+  }, [isIncome, modalLots]);
+
+  /** Lotes sin titular en catálogo; si aún no hay docs de lotes, se usan libres por movimientos. */
+  const incomeFreeLotNumbersForFirstSale = useMemo(() => {
+    if (!isIncome || !modalProject) return [];
+    if (modalLots.length > 0) {
+      return modalLots
+        .filter((l) => {
+          const id = typeof l.currentOwnerId === "string" ? l.currentOwnerId.trim() : "";
+          const name = (l.currentOwnerName ?? "").trim();
+          return !id && !name && l.lotNumber >= 1;
+        })
+        .map((l) => l.lotNumber)
+        .sort((a, b) => a - b);
+    }
+    return freeLotsForProject;
+  }, [isIncome, modalProject, modalLots, freeLotsForProject]);
+
   const incomeLotChipNumbers = useMemo(() => {
     if (!isIncome) return [];
-    return incomeUseFreeLot ? freeLotsForProject : lotsForSelectedPerson;
-  }, [isIncome, incomeUseFreeLot, freeLotsForProject, lotsForSelectedPerson]);
+    if (incomePickedTitular) return [];
+    if (incomeUseFreeLot) return incomeFreeLotNumbersForFirstSale;
+    return lotsForSelectedPerson;
+  }, [
+    isIncome,
+    incomePickedTitular,
+    incomeUseFreeLot,
+    incomeFreeLotNumbersForFirstSale,
+    lotsForSelectedPerson,
+  ]);
 
   /** Egreso: solo lotes de la persona; si aún no tiene ninguno, solo libres (sin flujo «añadir lote»). */
   const expenseLotChipNumbers = useMemo(() => {
@@ -240,9 +371,10 @@ export function QuickNewMovementButton({
 
   const canShowIncomeAddFreeLot =
     isIncome &&
+    !incomePickedTitular &&
     Boolean(person?.id) &&
     lotsForSelectedPerson.length >= 1 &&
-    freeLotsForProject.length > 0;
+    incomeFreeLotNumbersForFirstSale.length > 0;
 
   const previewAmount = useMemo(() => {
     const n = Number.parseFloat(amountStr.replace(",", "."));
@@ -264,12 +396,13 @@ export function QuickNewMovementButton({
 
   useEffect(() => {
     if (!open || !isIncome || !linkedToLot) return;
+    if (incomePickedTitular) return;
     if (!person?.id?.trim()) {
       setIncomeUseFreeLot(true);
       setSelectedLotNos([]);
       return;
     }
-    const owned = lotNumbersForPerson(modalProjectMovements, person.id);
+    const owned = lotsForSelectedPerson;
     if (owned.length === 0) {
       setIncomeUseFreeLot(true);
       setSelectedLotNos([]);
@@ -280,11 +413,11 @@ export function QuickNewMovementButton({
       setIncomeUseFreeLot(false);
       setSelectedLotNos([]);
     }
-  }, [open, isIncome, linkedToLot, person?.id, lotsForSelectedPerson.join(",")]);
+  }, [open, isIncome, linkedToLot, person?.id, lotsForSelectedPerson, incomePickedTitular]);
 
   useEffect(() => {
-    if (!open || !linkedToLot || !isIncome || !person?.id?.trim()) return;
-    const allowed = incomeUseFreeLot ? freeLotsForProject : lotsForSelectedPerson;
+    if (!open || !linkedToLot || !isIncome || !person?.id?.trim() || incomePickedTitular) return;
+    const allowed = incomeUseFreeLot ? incomeFreeLotNumbersForFirstSale : lotsForSelectedPerson;
     setSelectedLotNos((prev) => {
       const n = prev[0];
       if (n == null) return prev;
@@ -295,8 +428,9 @@ export function QuickNewMovementButton({
     linkedToLot,
     isIncome,
     person?.id,
+    incomePickedTitular,
     incomeUseFreeLot,
-    freeLotsForProject,
+    incomeFreeLotNumbersForFirstSale,
     lotsForSelectedPerson,
   ]);
 
@@ -307,7 +441,7 @@ export function QuickNewMovementButton({
       setSelectedLotNos([]);
       return;
     }
-    const owned = lotNumbersForPerson(modalProjectMovements, person.id);
+    const owned = lotsForSelectedPerson;
     if (owned.length === 0) {
       setSelectedLotNos([]);
     } else if (owned.length === 1) {
@@ -315,7 +449,7 @@ export function QuickNewMovementButton({
     } else {
       setSelectedLotNos([]);
     }
-  }, [open, isIncome, linkedToLot, person?.id, lotsForSelectedPerson.join(",")]);
+  }, [open, isIncome, linkedToLot, person?.id, lotsForSelectedPerson]);
 
   useEffect(() => {
     if (!open || !linkedToLot || isIncome || !person?.id?.trim()) return;
@@ -360,15 +494,21 @@ export function QuickNewMovementButton({
       return;
     }
     const n = effectiveSortedLots[0]!;
+    const fromLot = modalLots.find((l) => l.lotNumber === n)?.declaredLotValue;
+    if (fromLot != null && fromLot > 0) {
+      setLotValueStr(String(fromLot));
+      return;
+    }
     const hinted = lotValueHintFromProjectIncomes(modalProjectMovements, n);
     setLotValueStr(hinted != null ? String(hinted) : "");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sugerencia al cambiar solo el lote elegido
-  }, [open, isIncome, linkedToLot, lotKey, modalProject, effectiveSortedLots.length, modalProjectMovements]);
+  }, [open, isIncome, linkedToLot, lotKey, modalProject, effectiveSortedLots.length, modalProjectMovements, modalLots]);
 
   const previewVisible =
     Boolean(parsedMovementDate) ||
     concept.trim().length > 0 ||
     previewAmount !== null ||
+    (!isIncome && Boolean(workerContractor?.name.trim())) ||
     (linkedToLot && effectiveSortedLots.length > 0) ||
     linkedToLot ||
     previewLotValue !== null;
@@ -382,11 +522,15 @@ export function QuickNewMovementButton({
     setLotValueStr("");
     setPerson(null);
     setIncomeUseFreeLot(true);
+    setIncomePickedTitular(null);
+    setExpenseMode("standard");
+    setWorkerContractor(null);
     setError(null);
     setModalProjectId(null);
   }
 
   function goIncomeUseExistingLots() {
+    setIncomePickedTitular(null);
     setIncomeUseFreeLot(false);
     if (lotsForSelectedPerson.length === 1) {
       setSelectedLotNos([lotsForSelectedPerson[0]!]);
@@ -396,6 +540,7 @@ export function QuickNewMovementButton({
   }
 
   function goIncomeUseFreeLotMode() {
+    setIncomePickedTitular(null);
     setIncomeUseFreeLot(true);
     setSelectedLotNos([]);
   }
@@ -405,6 +550,8 @@ export function QuickNewMovementButton({
     setConcept("");
     setAmountStr("");
     setLotValueStr("");
+    setWorkerContractor(null);
+    setIncomePickedTitular(null);
     setError(null);
   }
 
@@ -415,7 +562,30 @@ export function QuickNewMovementButton({
     if (!parseLocalDateYmd(dateStr)) return false;
     const proj = modalProject;
     if (!proj) return false;
+
+    if (
+      kind === "expense" &&
+      modalProjectId &&
+      !isGastosProjectId(modalProjectId)
+    ) {
+      if (expenseMode === "trabajador") {
+        return Boolean(workerContractor?.name.trim());
+      }
+      if (expenseMode === "devolucion") {
+        if (!person?.id?.trim() || !person.name?.trim()) return false;
+        if (linkedToLot) {
+          if (loadingModalProjectMovements) return false;
+          if (effectiveSortedLots.length !== 1) return false;
+          if (!expenseSplitValid) return false;
+        }
+        return true;
+      }
+    }
+
     if (kind === "expense" && linkedToLot && loadingModalProjectMovements) return false;
+    if (kind === "income" && linkedToLot && (loadingModalProjectMovements || loadingModalLots)) {
+      return false;
+    }
     if (linkedToLot) {
       const maxLot = Math.max(0, Math.floor(proj.lotCount));
       if (maxLot < 1) return false;
@@ -439,17 +609,39 @@ export function QuickNewMovementButton({
     amountStr,
     dateStr,
     kind,
+    expenseMode,
+    workerContractor,
     linkedToLot,
     loadingModalProjectMovements,
+    loadingModalLots,
     effectiveSortedLots,
     modalProjectMovements,
     person,
     expenseSplitValid,
     isIncome,
+    incomePickedTitular,
   ]);
+
+  function pickIncomeTitular(lot: Lot) {
+    const id = typeof lot.currentOwnerId === "string" ? lot.currentOwnerId.trim() : "";
+    const name = (lot.currentOwnerName ?? "").trim();
+    if (!id || !name) return;
+    setIncomePickedTitular({ lotNumber: lot.lotNumber, personId: id, personName: name });
+    setPerson({ id, name });
+    setSelectedLotNos([lot.lotNumber]);
+    setIncomeUseFreeLot(false);
+  }
+
+  function clearIncomeTitularPick() {
+    setIncomePickedTitular(null);
+    setSelectedLotNos([]);
+    setPerson(null);
+    setIncomeUseFreeLot(true);
+  }
 
   function toggleLot(n: number) {
     if (loadingSubmit || !modalProject) return;
+    if (isIncome && incomePickedTitular) return;
     if (!person?.id?.trim()) return;
     const maxLot = Math.max(0, Math.floor(modalProject.lotCount));
     if (n < 1 || n > maxLot) return;
@@ -505,7 +697,29 @@ export function QuickNewMovementButton({
     let incomeLotValue: number | null = null;
     const lots = effectiveSortedLots;
 
-    if (kind === "income" || kind === "expense") {
+    const isExpenseTrabajador =
+      kind === "expense" &&
+      proj &&
+      modalProjectId &&
+      !isGastosProjectId(modalProjectId) &&
+      expenseMode === "trabajador";
+
+    if (kind === "expense" && proj && modalProjectId && !isGastosProjectId(modalProjectId)) {
+      if (expenseMode === "devolucion") {
+        if (!person?.id?.trim() || !person.name?.trim()) {
+          setError("En devolución debes elegir al cedente o dueño en Persona.");
+          return;
+        }
+      }
+      if (expenseMode === "trabajador") {
+        if (!workerContractor?.name.trim()) {
+          setError("Elige un contratista del catálogo o crea uno con «Nuevo».");
+          return;
+        }
+      }
+    }
+
+    if ((kind === "income" || kind === "expense") && !isExpenseTrabajador) {
       linked = linkedToLot;
       if (linked) {
         const maxLot = Math.max(0, Math.floor(proj.lotCount));
@@ -568,6 +782,91 @@ export function QuickNewMovementButton({
           return;
         }
         proj = ensured;
+      }
+
+      if (
+        kind === "expense" &&
+        proj &&
+        modalProjectId &&
+        !isGastosProjectId(modalProjectId) &&
+        expenseMode === "trabajador"
+      ) {
+        const wc = workerContractor;
+        if (!wc?.name.trim()) {
+          setError("Elige un contratista del catálogo o crea uno con «Nuevo».");
+          return;
+        }
+        await createWorkerPayment(companyId, modalProjectId, {
+          workerName: wc.name.trim(),
+          contractorId: wc.id,
+          workerPhone: wc.phone.trim() || null,
+          amount,
+          concept: trimmed,
+          paymentDate: movementDate,
+          projectLotCount: proj.lotCount,
+        });
+        notifyMovementsUpdated();
+        onCreated?.();
+
+        if (addAnother) {
+          resetForAnotherEntry();
+          if (companyId && modalProjectId) {
+            setLoadingModalProjectMovements(true);
+            try {
+              const list = await fetchMovements(companyId, modalProjectId);
+              setModalProjectMovements(list);
+            } catch {
+              setModalProjectMovements([]);
+            } finally {
+              setLoadingModalProjectMovements(false);
+            }
+          }
+        } else {
+          resetForm();
+          setOpen(false);
+        }
+        return;
+      }
+
+      if (
+        kind === "expense" &&
+        proj &&
+        modalProjectId &&
+        !isGastosProjectId(modalProjectId) &&
+        expenseMode === "devolucion"
+      ) {
+        const lotNum = linked && lots.length === 1 ? lots[0]! : null;
+        await createMonthlyRefund(companyId, modalProjectId, {
+          cedenteId: person!.id!.trim(),
+          cedenteName: person!.name!.trim(),
+          lotNumber: lotNum,
+          amount,
+          concept: trimmed,
+          refundMonth: dateStr.slice(0, 7),
+          refundDate: movementDate,
+          projectLotCount: proj.lotCount,
+        });
+        notifyMovementsUpdated();
+        onCreated?.();
+
+        if (addAnother) {
+          resetForAnotherEntry();
+          if (companyId && modalProjectId) {
+            setLoadingModalProjectMovements(true);
+            try {
+              const list = await fetchMovements(companyId, modalProjectId);
+              setModalProjectMovements(list);
+            } catch {
+              setModalProjectMovements([]);
+            } finally {
+              setLoadingModalProjectMovements(false);
+            }
+          }
+        } else {
+          resetForm();
+          setOpen(false);
+        }
+        return;
       }
 
       if (!linked) {
@@ -654,6 +953,9 @@ export function QuickNewMovementButton({
           setPerson(null);
           setLotValueStr("");
           setIncomeUseFreeLot(true);
+          setIncomePickedTitular(null);
+          setExpenseMode("standard");
+          setWorkerContractor(null);
           setModalProjectId(
             pageProjectId && pageLoadedProject?.id === pageProjectId ? pageProjectId : null,
           );
@@ -682,8 +984,8 @@ export function QuickNewMovementButton({
                   <Badge variant="default" className="align-middle">
                     {kindLabel}
                   </Badge>
-                  . Opcional: asocia el ingreso a un lote; el valor del lote se sugiere si ya consta en
-                  otro ingreso del mismo número. Indica la{" "}
+                  . Si imputas a lote, elige un titular desde el catálogo Lotes o una primera venta en lote libre; el
+                  valor del lote se sugiere si está en Lotes o en otro ingreso al mismo número. Indica la{" "}
                   <span className="font-medium text-foreground">fecha del movimiento</span> (sirve para
                   filtrar por mes en el listado).
                 </>
@@ -698,13 +1000,12 @@ export function QuickNewMovementButton({
                 </>
               ) : (
                 <>
-                  Elige el proyecto y completa los datos. Se guardará como{" "}
-                  <Badge variant="destructive" className="align-middle">
-                    {kindLabel}
-                  </Badge>
-                  . Opcional: imputa el egreso a un lote; el monto no puede superar el saldo del lote.
-                  Indica la <span className="font-medium text-foreground">fecha del movimiento</span>{" "}
-                  (sirve para filtrar por mes en el listado).
+                  Elige el proyecto y completa los datos. Puedes registrar un egreso general, una{" "}
+                  <span className="font-medium text-foreground">devolución</span> a dueño o cedente, o un{" "}
+                  <span className="font-medium text-foreground">pago a trabajador</span>. Opcionalmente imputa
+                  a lote; el monto no puede superar el saldo del lote. Indica la{" "}
+                  <span className="font-medium text-foreground">fecha del movimiento</span> (sirve para filtrar
+                  por mes en el listado).
                 </>
               )}
             </DialogDescription>
@@ -807,8 +1108,66 @@ export function QuickNewMovementButton({
               </p>
             </div>
 
-            {modalProject && (isIncome || !isGastosProjectId(modalProject.id)) ? (
+            {modalProject && kind === "expense" && !isGastosProjectId(modalProject.id) ? (
+              <div className="space-y-2">
+                <Label htmlFor="expense-mode">Tipo de egreso</Label>
+                <Select
+                  value={expenseMode}
+                  onValueChange={(v) => setExpenseMode(v as ExpenseMode)}
+                  disabled={loadingSubmit}
+                  modal={false}
+                >
+                  <SelectTrigger
+                    id="expense-mode"
+                    size="default"
+                    className="h-10 w-full min-w-0 max-w-full [&_[data-slot=select-value]]:text-left"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start" sideOffset={6} alignItemWithTrigger={false}>
+                    <SelectItem value="standard">Egreso general o por lote</SelectItem>
+                    <SelectItem value="devolucion">Devolución a dueño o cedente</SelectItem>
+                    <SelectItem value="trabajador">Pago a trabajador o contratista</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Las devoluciones y los pagos a trabajador quedan enlazados al proyecto y aparecen en el
+                  consolidado de egresos.
+                </p>
+              </div>
+            ) : null}
+
+            {modalProject &&
+            kind === "expense" &&
+            !isGastosProjectId(modalProject.id) &&
+            expenseMode === "trabajador" ? (
+              <ContractorPickerField
+                companyId={companyId}
+                value={workerContractor}
+                onChange={setWorkerContractor}
+                disabled={loadingSubmit}
+                id="mov-worker-contractor"
+                required
+              />
+            ) : null}
+
+            {modalProject && (isIncome || (!isGastosProjectId(modalProject.id) && expenseMode !== "trabajador")) ? (
               <div className="space-y-3 rounded-lg border border-border/80 bg-muted/20 px-3 py-3">
+                {!isIncome && expenseMode === "devolucion" && !isGastosProjectId(modalProject.id) ? (
+                  <div className="space-y-2 pb-1">
+                    <PersonPickerField
+                      companyId={companyId}
+                      value={person}
+                      onChange={setPerson}
+                      disabled={loadingSubmit}
+                      id="mov-person-devolucion"
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Persona que recibe la devolución. Opcionalmente imputa a un lote con la casilla de abajo.
+                    </p>
+                  </div>
+                ) : null}
                 <div className="flex items-start gap-3">
                   <input
                     id="mov-linked-lot"
@@ -824,7 +1183,10 @@ export function QuickNewMovementButton({
                       if (!on) {
                         setSelectedLotNos([]);
                         setLotValueStr("");
-                        setPerson(null);
+                        setIncomePickedTitular(null);
+                        if (isIncome || expenseMode !== "devolucion") {
+                          setPerson(null);
+                        }
                         setIncomeUseFreeLot(true);
                       }
                     }}
@@ -838,14 +1200,16 @@ export function QuickNewMovementButton({
                     </Label>
                     <p className="text-xs text-muted-foreground">
                       {isIncome
-                        ? "Primero la persona. Abonas en sus lotes o, con el botón, en un lote libre. No se muestran lotes de otros clientes."
-                        : "Elige la persona y un solo lote. Con varios lotes asignados, indica en cuál va el egreso. No hay «añadir lote libre» en egresos."}
+                        ? "Los titulares salen del catálogo Lotes (misma empresa). Elige una fila o, abajo, primera venta en lote libre con persona del catálogo."
+                        : expenseMode === "devolucion"
+                          ? "Si imputas a lote, elige un solo número; el monto no puede superar el saldo disponible en ese lote."
+                          : "Elige la persona y un solo lote. Con varios lotes asignados, indica en cuál va el egreso. No hay «añadir lote libre» en egresos."}
                     </p>
                   </div>
                 </div>
                 {linkedToLot ? (
                   <div className="space-y-4 pt-1">
-                    {!isGastosProjectId(modalProject.id) ? (
+                    {!isGastosProjectId(modalProject.id) && !isIncome && expenseMode === "standard" ? (
                       <PersonPickerField
                         companyId={companyId}
                         value={person}
@@ -864,114 +1228,189 @@ export function QuickNewMovementButton({
                     ) : null}
 
                     {modalProject.lotCount >= 1 &&
+                    !isIncome &&
                     !isGastosProjectId(modalProject.id) &&
                     !person?.id ? (
                       <p className="text-xs text-amber-900 dark:text-amber-100/90">
-                        {isIncome
-                          ? "Elige la persona. No podrás usar lotes que ya pertenezcan a otro cliente."
-                          : "Elige la persona arriba. Luego podrás marcar solo los lotes que sigan libres; los que ya tiene asignado otro cliente no se muestran."}
+                        Elige la persona arriba. Luego podrás marcar solo los lotes que sigan libres; los que ya tiene
+                        asignado otro cliente no se muestran.
                       </p>
                     ) : null}
 
-                    {modalProject.lotCount >= 1 &&
-                    isIncome &&
-                    !isGastosProjectId(modalProject.id) &&
-                    person?.id ? (
-                      <div className="space-y-3">
-                        {lotsForSelectedPerson.length === 0 ? (
-                          <p className="text-sm font-medium text-foreground">Lote libre (primera asignación)</p>
-                        ) : incomeUseFreeLot ? (
-                          <>
-                            <p className="text-sm font-medium text-foreground">Lote libre nuevo</p>
-                            <p className="text-xs text-muted-foreground">
-                              El ingreso quedará en el número que elijas si aún no tiene dueño.
-                            </p>
-                          </>
-                        ) : (
-                          <>
+                    {modalProject.lotCount >= 1 && isIncome && !isGastosProjectId(modalProject.id) ? (
+                      <div className="space-y-4">
+                        {loadingModalLots ? (
+                          <p className="text-xs text-muted-foreground">Cargando catálogo de lotes del proyecto…</p>
+                        ) : null}
+                        {incomeTitularRows.length > 0 ? (
+                          <div className="space-y-2">
                             <p className="text-sm font-medium text-foreground">
-                              {lotsForSelectedPerson.length > 1
-                                ? "¿A cuál lote va este abono?"
-                                : "Lote asignado a esta persona"}
+                              Ingreso a titular ya registrado en Lotes
                             </p>
-                            {lotsForSelectedPerson.length === 1 ? (
-                              <p className="text-xs text-muted-foreground">
-                                Puedes abonar aquí o usar el botón para un lote libre nuevo.
-                              </p>
+                            <p className="text-xs text-muted-foreground">
+                              Elige la fila: se imputa al lote y al dueño del catálogo (no elijas el número a mano).
+                            </p>
+                            <div className="flex max-h-[200px] flex-wrap gap-2 overflow-y-auto rounded-lg border border-border/60 bg-background/80 p-2">
+                              {incomeTitularRows.map((lot) => {
+                                const selected = incomePickedTitular?.lotNumber === lot.lotNumber;
+                                return (
+                                  <button
+                                    key={lot.id}
+                                    type="button"
+                                    disabled={loadingSubmit}
+                                    onClick={() => pickIncomeTitular(lot)}
+                                    className={
+                                      selected
+                                        ? "min-h-10 rounded-lg bg-primary px-3 py-2 text-left text-sm font-medium text-primary-foreground shadow-sm ring-1 ring-primary/30"
+                                        : "min-h-10 rounded-lg border border-border/80 bg-muted/40 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                                    }
+                                  >
+                                    <span className="font-mono tabular-nums">Lote {lot.lotNumber}</span>
+                                    <span className="mt-0.5 block text-xs opacity-90">
+                                      {lot.currentOwnerName ?? "—"}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {incomePickedTitular ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 text-xs"
+                                disabled={loadingSubmit}
+                                onClick={() => clearIncomeTitularPick()}
+                              >
+                                Elegir otra opción (titular o primera venta)
+                              </Button>
                             ) : null}
-                          </>
-                        )}
-
-                        {canShowIncomeAddFreeLot && !incomeUseFreeLot ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-full text-xs"
-                            disabled={loadingSubmit}
-                            onClick={() => goIncomeUseFreeLotMode()}
-                          >
-                            Añadir ingreso en un lote libre
-                          </Button>
+                          </div>
+                        ) : !loadingModalLots ? (
+                          <p className="text-xs text-muted-foreground">
+                            No hay titulares en el catálogo de Lotes. Usa «primera venta» abajo o asigna titular en la
+                            página Lotes.
+                          </p>
                         ) : null}
 
-                        {incomeUseFreeLot && lotsForSelectedPerson.length >= 1 ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-full text-xs"
-                            disabled={loadingSubmit}
-                            onClick={() => goIncomeUseExistingLots()}
-                          >
-                            Abonar en un lote ya de esta persona
-                          </Button>
-                        ) : null}
-
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <Label className="text-foreground">
-                            Número de lote <span className="text-destructive">*</span>
-                          </Label>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 text-xs"
-                            disabled={loadingSubmit}
-                            onClick={() => clearLots()}
-                          >
-                            Quitar
-                          </Button>
-                        </div>
-                        <div className="flex max-h-[180px] flex-wrap gap-2 overflow-y-auto rounded-lg border border-border/60 bg-background/80 p-2">
-                          {incomeLotChipNumbers.length === 0 ? (
-                            <p className="w-full px-1 py-2 text-xs text-muted-foreground">
-                              {incomeUseFreeLot
-                                ? "No hay lotes libres en este proyecto."
-                                : "Esta persona aún no tiene lotes en este proyecto."}
+                        {!incomePickedTitular ? (
+                          <div className="space-y-3 border-t border-border/60 pt-3">
+                            <p className="text-sm font-medium text-foreground">
+                              Primera venta (lote sin titular en Lotes)
                             </p>
-                          ) : (
-                            incomeLotChipNumbers.map((n) => {
-                              const on = sortedLots.includes(n);
-                              return (
-                                <button
-                                  key={n}
-                                  type="button"
-                                  disabled={loadingSubmit}
-                                  onClick={() => toggleLot(n)}
-                                  className={
-                                    on
-                                      ? "min-h-9 min-w-9 rounded-lg bg-primary text-primary-foreground text-sm font-semibold tabular-nums shadow-sm ring-1 ring-primary/30 transition-colors hover:bg-primary/90"
-                                      : "min-h-9 min-w-9 rounded-lg border border-border/80 bg-muted/40 text-sm font-medium tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                                  }
-                                  aria-pressed={on ? "true" : "false"}
-                                >
-                                  {n}
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
+                            <PersonPickerField
+                              companyId={companyId}
+                              value={person}
+                              onChange={setPerson}
+                              disabled={loadingSubmit}
+                              id="mov-person-income-free"
+                              required={false}
+                            />
+                            {person?.id ? (
+                              <div className="space-y-3">
+                                {lotsForSelectedPerson.length === 0 ? (
+                                  <p className="text-sm font-medium text-foreground">Lote libre (primera asignación)</p>
+                                ) : incomeUseFreeLot ? (
+                                  <>
+                                    <p className="text-sm font-medium text-foreground">Lote libre nuevo</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      El ingreso quedará en el número que elijas si el lote sigue sin titular en
+                                      Lotes.
+                                    </p>
+                                  </>
+                                ) : (
+                                  <>
+                                    <p className="text-sm font-medium text-foreground">
+                                      {lotsForSelectedPerson.length > 1
+                                        ? "¿A cuál lote va este abono?"
+                                        : "Lote asignado a esta persona"}
+                                    </p>
+                                    {lotsForSelectedPerson.length === 1 ? (
+                                      <p className="text-xs text-muted-foreground">
+                                        Puedes abonar aquí o usar el botón para un lote libre nuevo.
+                                      </p>
+                                    ) : null}
+                                  </>
+                                )}
+
+                                {canShowIncomeAddFreeLot && !incomeUseFreeLot ? (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 w-full text-xs"
+                                    disabled={loadingSubmit}
+                                    onClick={() => goIncomeUseFreeLotMode()}
+                                  >
+                                    Añadir ingreso en un lote libre
+                                  </Button>
+                                ) : null}
+
+                                {incomeUseFreeLot && lotsForSelectedPerson.length >= 1 ? (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 w-full text-xs"
+                                    disabled={loadingSubmit}
+                                    onClick={() => goIncomeUseExistingLots()}
+                                  >
+                                    Abonar en un lote ya de esta persona
+                                  </Button>
+                                ) : null}
+
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <Label className="text-foreground">
+                                    Número de lote <span className="text-destructive">*</span>
+                                  </Label>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    disabled={loadingSubmit}
+                                    onClick={() => clearLots()}
+                                  >
+                                    Quitar
+                                  </Button>
+                                </div>
+                                <div className="flex max-h-[180px] flex-wrap gap-2 overflow-y-auto rounded-lg border border-border/60 bg-background/80 p-2">
+                                  {incomeLotChipNumbers.length === 0 ? (
+                                    <p className="w-full px-1 py-2 text-xs text-muted-foreground">
+                                      {incomeUseFreeLot
+                                        ? "No hay lotes libres en este proyecto."
+                                        : "Esta persona aún no tiene lotes en este proyecto."}
+                                    </p>
+                                  ) : (
+                                    incomeLotChipNumbers.map((n) => {
+                                      const on = sortedLots.includes(n);
+                                      return (
+                                        <button
+                                          key={n}
+                                          type="button"
+                                          disabled={loadingSubmit}
+                                          onClick={() => toggleLot(n)}
+                                          className={
+                                            on
+                                              ? "min-h-9 min-w-9 rounded-lg bg-primary text-primary-foreground text-sm font-semibold tabular-nums shadow-sm ring-1 ring-primary/30 transition-colors hover:bg-primary/90"
+                                              : "min-h-9 min-w-9 rounded-lg border border-border/80 bg-muted/40 text-sm font-medium tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                                          }
+                                          aria-pressed={on ? "true" : "false"}
+                                        >
+                                          {n}
+                                        </button>
+                                      );
+                                    })
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-amber-900 dark:text-amber-100/90">
+                                Elige la persona del catálogo para un lote libre, o selecciona un titular arriba.
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
 
@@ -984,8 +1423,9 @@ export function QuickNewMovementButton({
                           <>
                             <p className="text-sm font-medium text-foreground">Lote (libre o sin asignar aún)</p>
                             <p className="text-xs text-muted-foreground">
-                              Esta persona no tiene lotes en este proyecto; solo ves números libres. El disponible
-                              puede ser 0 si no hay ingresos a ese lote.
+                              No hay lotes vinculados a esta persona (ni por movimientos ni por haber sido titular y
+                              ceder); solo ves números libres. El disponible puede ser 0 si no hay ingresos a ese
+                              lote.
                             </p>
                           </>
                         ) : (
@@ -996,7 +1436,9 @@ export function QuickNewMovementButton({
                                 : "Lote asignado a esta persona"}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              Un solo lote por registro. No se reparte entre varios.
+                              Un solo lote por registro. No se reparte entre varios. Si esta persona fue titular y
+                              cedió el lote, el número sigue apareciendo aquí para poder imputar devoluciones u otros
+                              egresos al ex titular.
                             </p>
                           </>
                         )}
@@ -1183,31 +1625,58 @@ export function QuickNewMovementButton({
                     {modalProject ? (
                       <span className="text-muted-foreground">· {modalProject.name}</span>
                     ) : null}
-                    {linkedToLot ? (
+                    {isIncome ? (
+                      linkedToLot ? (
+                        effectiveSortedLots.length === 1 &&
+                        previewLot !== null &&
+                        !Number.isNaN(previewLot) &&
+                        modalProject &&
+                        previewLot >= 1 &&
+                        previewLot <= modalProject.lotCount ? (
+                          <span className="text-muted-foreground tabular-nums">
+                            · Lote {previewLot}
+                            {previewLotValue !== null
+                              ? ` · Valor lote ${moneyFmt.format(previewLotValue)}`
+                              : ""}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">· Elige un lote</span>
+                        )
+                      ) : (
+                        <span className="text-muted-foreground">· Ingreso general</span>
+                      )
+                    ) : modalProject && !isGastosProjectId(modalProject.id) && expenseMode === "trabajador" ? (
+                      <span className="text-muted-foreground">
+                        · {workerContractor?.name.trim() || "Elige contratista"}
+                      </span>
+                    ) : linkedToLot ? (
                       effectiveSortedLots.length === 1 &&
                       previewLot !== null &&
                       !Number.isNaN(previewLot) &&
                       modalProject &&
                       previewLot >= 1 &&
                       previewLot <= modalProject.lotCount ? (
-                        <span className="text-muted-foreground tabular-nums">
-                          · Lote {previewLot}
-                          {isIncome && previewLotValue !== null
-                            ? ` · Valor lote ${moneyFmt.format(previewLotValue)}`
-                            : ""}
-                        </span>
+                        <span className="text-muted-foreground tabular-nums">· Lote {previewLot}</span>
                       ) : (
-                        <span className="text-muted-foreground">
-                          {isIncome ? "· Elige un lote" : "· Elige un lote"}
-                        </span>
+                        <span className="text-muted-foreground">· Elige un lote</span>
                       )
-                    ) : isIncome ? (
-                      <span className="text-muted-foreground">· Ingreso general</span>
+                    ) : expenseMode === "devolucion" ? (
+                      <span className="text-muted-foreground">· Devolución</span>
                     ) : (
                       <span className="text-muted-foreground">· Egreso general</span>
                     )}
                   </div>
-                  {linkedToLot && person?.name ? (
+                  {!isIncome && expenseMode === "trabajador" && workerContractor?.name.trim() ? (
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      Contratista:{" "}
+                      <span className="font-medium text-foreground">{workerContractor.name.trim()}</span>
+                      {workerContractor.phone.trim() ? (
+                        <span className="ml-1 tabular-nums">· {workerContractor.phone.trim()}</span>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  {person?.name &&
+                  (linkedToLot || (!isIncome && expenseMode === "devolucion")) ? (
                     <p className="mt-1.5 text-xs text-muted-foreground">
                       Persona:{" "}
                       <span className="font-medium text-foreground">{person.name}</span>
@@ -1255,7 +1724,13 @@ export function QuickNewMovementButton({
                 disabled={
                   loadingSubmit ||
                   !canChainSubmit ||
-                  (kind === "expense" && linkedToLot && loadingModalProjectMovements)
+                  (kind === "expense" &&
+                    linkedToLot &&
+                    loadingModalProjectMovements &&
+                    expenseMode !== "trabajador") ||
+                  (kind === "income" &&
+                    linkedToLot &&
+                    (loadingModalProjectMovements || loadingModalLots))
                 }
               >
                 {loadingSubmit ? (

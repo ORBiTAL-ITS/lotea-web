@@ -1,3 +1,4 @@
+import type { LotTransfer } from "@/features/lots/models/lot-types";
 import type { Movement } from "../models/movement-types";
 
 /**
@@ -36,6 +37,40 @@ export function lotNumbersForPerson(movements: readonly Movement[], personId: st
     if (m.personId?.trim() === id) s.add(m.lotNumber);
   }
   return [...s].sort((a, b) => a - b);
+}
+
+/**
+ * Lotes donde esta persona fue cedente en una cesión (ex titular), aunque ya no tenga movimientos
+ * recientes con ese lote. Sirve para devoluciones/egresos al ex titular.
+ */
+export function lotNumbersWherePersonWasFormerOwner(
+  transfers: readonly LotTransfer[],
+  personId: string,
+): number[] {
+  const id = personId.trim();
+  if (!id) return [];
+  const s = new Set<number>();
+  for (const t of transfers) {
+    if (t.fromOwnerId?.trim() !== id) continue;
+    const n = t.lotNumber;
+    if (n != null && Number.isInteger(n) && n >= 1) s.add(n);
+  }
+  return [...s].sort((a, b) => a - b);
+}
+
+/**
+ * Lotes que la persona puede asociar en movimientos: por historial de movimientos o por haber sido titular
+ * y cedido (cesiones del proyecto).
+ */
+export function lotNumbersAssociableToPerson(
+  movements: readonly Movement[],
+  transfers: readonly LotTransfer[],
+  personId: string,
+): number[] {
+  const a = new Set<number>();
+  for (const n of lotNumbersForPerson(movements, personId)) a.add(n);
+  for (const n of lotNumbersWherePersonWasFormerOwner(transfers, personId)) a.add(n);
+  return [...a].sort((x, y) => x - y);
 }
 
 /** Lote libre (sin dueño registrado) o ya asignado a esta persona. */

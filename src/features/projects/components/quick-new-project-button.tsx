@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, Upload } from "lucide-react";
 import { auth } from "@/shared/firebase/firebase-client";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +24,10 @@ import {
 } from "@/features/session/hooks/use-effective-company-id";
 import { createProject } from "../services/projects-service";
 import { notifyProjectsUpdated } from "../projects-events";
+import {
+  compressProjectImage,
+  MAX_INVOICE_IMAGE_DATA_URL_CHARS,
+} from "../utils/compress-project-image";
 
 export function QuickNewProjectButton() {
   const dispatch = useAppDispatch();
@@ -33,6 +37,9 @@ export function QuickNewProjectButton() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [lotCount, setLotCount] = useState("");
+  const [invoiceImageUrl, setInvoiceImageUrl] = useState("");
+  const [invoiceImageData, setInvoiceImageData] = useState<string | null>(null);
+  const [compressing, setCompressing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,7 +55,29 @@ export function QuickNewProjectButton() {
   function reset() {
     setName("");
     setLotCount("");
+    setInvoiceImageUrl("");
+    setInvoiceImageData(null);
     setError(null);
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    setCompressing(true);
+    try {
+      const { dataUrl } = await compressProjectImage(file);
+      if (dataUrl.length > MAX_INVOICE_IMAGE_DATA_URL_CHARS) {
+        throw new Error("La imagen comprimida sigue siendo demasiado grande. Prueba otra foto.");
+      }
+      setInvoiceImageData(dataUrl);
+      setInvoiceImageUrl("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo procesar la imagen.");
+    } finally {
+      setCompressing(false);
+    }
   }
 
   async function refreshSessionFromFirebase() {
@@ -61,7 +90,7 @@ export function QuickNewProjectButton() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (loading) return;
+    if (loading || compressing) return;
     setError(null);
 
     const trimmedProject = name.trim();
@@ -123,6 +152,11 @@ export function QuickNewProjectButton() {
         name: trimmedProject,
         status: "active",
         ...(lots !== undefined ? { lotCount: lots } : {}),
+        ...(invoiceImageData
+          ? { invoiceImageData }
+          : invoiceImageUrl.trim()
+            ? { invoiceImageUrl: invoiceImageUrl.trim() }
+            : {}),
       });
 
       reset();
@@ -153,17 +187,17 @@ export function QuickNewProjectButton() {
       <Dialog
         open={open}
         onOpenChange={(next) => {
-          if (!next && loading) return;
+          if (!next && (loading || compressing)) return;
           setOpen(next);
           if (!next) reset();
         }}
       >
-        <DialogContent className="sm:max-w-md" showCloseButton>
+        <DialogContent className="max-h-[min(90vh,820px)] overflow-y-auto sm:max-w-lg" showCloseButton>
           <DialogHeader>
             <DialogTitle>Nuevo proyecto</DialogTitle>
             <DialogDescription>
               Nombre del proyecto obligatorio. Cantidad de lotes opcional (si la dejas vacía, queda en
-              0).
+              0). Puedes subir una imagen de factura; se comprime en el navegador antes de guardarla.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -197,14 +231,56 @@ export function QuickNewProjectButton() {
                 placeholder="Ej. 120"
                 value={lotCount}
                 onChange={(e) => setLotCount(e.target.value)}
-                disabled={loading}
+                disabled={loading || compressing}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Imagen en factura (opcional)</Label>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="gap-2"
+                  disabled={loading || compressing}
+                  onClick={() => document.getElementById("quick-proj-image-file")?.click()}
+                >
+                  {compressing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  {compressing ? "Comprimiendo…" : "Subir imagen"}
+                </Button>
+                <input
+                  id="quick-proj-image-file"
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  aria-label="Seleccionar imagen del proyecto"
+                  title="Seleccionar imagen del proyecto"
+                  onChange={(ev) => void handleFileChange(ev)}
+                />
+              </div>
+              {invoiceImageData ? (
+                <p className="text-xs text-muted-foreground">Imagen lista para guardar (comprimida).</p>
+              ) : null}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="quick-proj-image">O URL de imagen (opcional)</Label>
+              <Input
+                id="quick-proj-image"
+                type="url"
+                placeholder="https://..."
+                value={invoiceImageUrl}
+                onChange={(e) => {
+                  setInvoiceImageUrl(e.target.value);
+                  if (e.target.value.trim()) setInvoiceImageData(null);
+                }}
+                disabled={loading || compressing}
               />
             </div>
             <DialogFooter className="gap-2 pt-2 sm:justify-end">
               <Button
                 type="button"
                 variant="outline"
-                disabled={loading}
+                disabled={loading || compressing}
                 onClick={() => {
                   reset();
                   setOpen(false);
@@ -212,7 +288,7 @@ export function QuickNewProjectButton() {
               >
                 Cancelar
               </Button>
-              <Button type="submit" disabled={loading}>
+              <Button type="submit" disabled={loading || compressing}>
                 {loading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />

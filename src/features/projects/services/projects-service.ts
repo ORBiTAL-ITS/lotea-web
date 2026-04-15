@@ -34,12 +34,16 @@ export type CreateProjectInput = {
   code?: string;
   status: ProjectStatus;
   lotCount?: number;
+  invoiceImageUrl?: string | null;
+  invoiceImageData?: string | null;
 };
 
 export type UpdateProjectInput = {
   name?: string;
   lotCount?: number;
   status?: ProjectStatus;
+  invoiceImageUrl?: string | null;
+  invoiceImageData?: string | null;
 };
 
 export async function createProject(companyId: string, input: CreateProjectInput) {
@@ -53,11 +57,19 @@ export async function createProject(companyId: string, input: CreateProjectInput
       ? Math.floor(input.lotCount)
       : 0;
 
+  const embedded =
+    typeof input.invoiceImageData === "string" && input.invoiceImageData.startsWith("data:image/")
+      ? input.invoiceImageData
+      : null;
+  const externalUrl = input.invoiceImageUrl?.trim() ? input.invoiceImageUrl.trim() : null;
+
   await addDoc(projectsCol(companyId), {
     name,
     code,
     status: input.status,
     lotCount,
+    invoiceImageData: embedded,
+    invoiceImageUrl: embedded ? null : externalUrl,
     createdAt: serverTimestamp(),
   });
 }
@@ -86,6 +98,22 @@ export async function updateProject(
     patch.status = input.status;
   }
 
+  if (input.invoiceImageUrl !== undefined) {
+    const value = input.invoiceImageUrl?.trim();
+    patch.invoiceImageUrl = value ? value : null;
+  }
+
+  if (input.invoiceImageData !== undefined) {
+    const raw = input.invoiceImageData;
+    if (raw === null) {
+      patch.invoiceImageData = null;
+    } else if (typeof raw === "string" && raw.startsWith("data:image/")) {
+      patch.invoiceImageData = raw;
+    } else {
+      patch.invoiceImageData = null;
+    }
+  }
+
   if (Object.keys(patch).length === 0) return;
 
   await updateDoc(doc(db, "companies", companyId, "projects", projectId), patch);
@@ -104,8 +132,22 @@ function mapProjectDoc(id: string, data: Record<string, unknown>): Project {
     code: String(data.code ?? ""),
     status: (data.status === "closed" ? "closed" : "active") as ProjectStatus,
     lotCount,
+    invoiceImageUrl:
+      typeof data.invoiceImageUrl === "string" && data.invoiceImageUrl.trim().length > 0
+        ? data.invoiceImageUrl.trim()
+        : null,
+    invoiceImageData:
+      typeof data.invoiceImageData === "string" && data.invoiceImageData.startsWith("data:image/")
+        ? data.invoiceImageData
+        : null,
     createdAt: (data.createdAt as Project["createdAt"]) ?? null,
   };
+}
+
+export async function fetchProjectById(companyId: string, projectId: string): Promise<Project | null> {
+  const snap = await getDoc(doc(db, "companies", companyId, "projects", projectId));
+  if (!snap.exists()) return null;
+  return mapProjectDoc(snap.id, snap.data() as Record<string, unknown>);
 }
 
 export async function fetchProjects(companyId: string): Promise<Project[]> {

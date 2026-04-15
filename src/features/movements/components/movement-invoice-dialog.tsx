@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { InvoicePrintSheet } from "@/features/invoicing/components/invoice-print-sheet";
 import type { Project } from "@/features/projects/models/project-types";
+import { getProjectInvoiceImageSrc } from "@/features/projects/utils/project-invoice-image";
 import type { Movement } from "../models/movement-types";
 import { formatMovementInvoice } from "../utils/movements-display";
 
@@ -134,6 +135,7 @@ export function MovementInvoiceDialog({
                   companyName={companyName}
                   projectName={project.name}
                   projectCode={project.code}
+                  projectImageUrl={getProjectInvoiceImageSrc(project)}
                   movement={movement}
                   personDisplayOverride={personLine}
                   delivererCaption={delivererCaption.trim()}

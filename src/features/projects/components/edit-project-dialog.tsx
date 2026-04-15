@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { ImageOff, Loader2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,7 +14,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Project } from "../models/project-types";
-import { updateProject } from "../services/projects-service";
+import { updateProject, type UpdateProjectInput } from "../services/projects-service";
+import {
+  compressProjectImage,
+  MAX_INVOICE_IMAGE_DATA_URL_CHARS,
+} from "../utils/compress-project-image";
+import { getProjectInvoiceImageSrc } from "../utils/project-invoice-image";
 
 type Props = {
   open: boolean;
@@ -27,6 +32,11 @@ type Props = {
 export function EditProjectDialog({ open, onOpenChange, companyId, project, onSaved }: Props) {
   const [name, setName] = useState("");
   const [lotCount, setLotCount] = useState("0");
+  const [invoiceImageUrl, setInvoiceImageUrl] = useState("");
+  /** Nueva imagen (data URL comprimida); null = no hay cambio de archivo. */
+  const [pendingImageData, setPendingImageData] = useState<string | null>(null);
+  const [removeImage, setRemoveImage] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,12 +44,36 @@ export function EditProjectDialog({ open, onOpenChange, companyId, project, onSa
     if (!project) return;
     setName(project.name);
     setLotCount(String(project.lotCount));
+    setInvoiceImageUrl(project.invoiceImageUrl ?? "");
+    setPendingImageData(null);
+    setRemoveImage(false);
     setError(null);
   }, [project]);
 
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    setCompressing(true);
+    setRemoveImage(false);
+    try {
+      const { dataUrl } = await compressProjectImage(file);
+      if (dataUrl.length > MAX_INVOICE_IMAGE_DATA_URL_CHARS) {
+        throw new Error("La imagen comprimida sigue siendo demasiado grande. Prueba otra foto.");
+      }
+      setPendingImageData(dataUrl);
+      setInvoiceImageUrl("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo procesar la imagen.");
+    } finally {
+      setCompressing(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (loading) return;
+    if (loading || compressing) return;
     if (!project) return;
     setError(null);
     const lots = Number.parseInt(lotCount, 10);
@@ -49,10 +83,33 @@ export function EditProjectDialog({ open, onOpenChange, companyId, project, onSa
     }
     setLoading(true);
     try {
-      await updateProject(companyId, project.id, {
+      if (pendingImageData && pendingImageData.length > MAX_INVOICE_IMAGE_DATA_URL_CHARS) {
+        throw new Error("La imagen es demasiado grande para guardarla. Prueba con otra foto.");
+      }
+
+      const patch: UpdateProjectInput = {
         name: name.trim(),
         lotCount: lots,
-      });
+      };
+
+      if (removeImage) {
+        patch.invoiceImageData = null;
+        patch.invoiceImageUrl = null;
+      } else if (pendingImageData) {
+        patch.invoiceImageData = pendingImageData;
+        patch.invoiceImageUrl = null;
+      } else {
+        const nextUrl = invoiceImageUrl.trim() || null;
+        const prevUrl = (project.invoiceImageUrl ?? "").trim() || null;
+        if (nextUrl) {
+          patch.invoiceImageUrl = nextUrl;
+          patch.invoiceImageData = null;
+        } else if (prevUrl) {
+          patch.invoiceImageUrl = null;
+        }
+      }
+
+      await updateProject(companyId, project.id, patch);
       onSaved();
       onOpenChange(false);
     } catch (err) {
@@ -62,6 +119,10 @@ export function EditProjectDialog({ open, onOpenChange, companyId, project, onSa
     }
   }
 
+  const previewSrc = removeImage
+    ? null
+    : pendingImageData ?? (project ? getProjectInvoiceImageSrc(project) : null);
+
   return (
     <Dialog
       open={open}
@@ -70,11 +131,12 @@ export function EditProjectDialog({ open, onOpenChange, companyId, project, onSa
         onOpenChange(next);
       }}
     >
-      <DialogContent className="sm:max-w-md" showCloseButton>
+      <DialogContent className="max-h-[min(90vh,880px)] overflow-y-auto sm:max-w-lg" showCloseButton>
         <DialogHeader>
           <DialogTitle>Editar proyecto</DialogTitle>
           <DialogDescription>
-            Nombre y cantidad de lotes. El código ({project?.code}) no se modifica aquí.
+            Nombre y cantidad de lotes. El código ({project?.code}) no se modifica aquí. La imagen de factura se
+            comprime en el navegador antes de guardarla.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -90,7 +152,7 @@ export function EditProjectDialog({ open, onOpenChange, companyId, project, onSa
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              disabled={loading}
+              disabled={loading || compressing}
             />
           </div>
           <div className="space-y-2">
@@ -104,14 +166,88 @@ export function EditProjectDialog({ open, onOpenChange, companyId, project, onSa
               value={lotCount}
               onChange={(e) => setLotCount(e.target.value)}
               required
-              disabled={loading}
+              disabled={loading || compressing}
             />
           </div>
+
+          <div className="space-y-2">
+            <Label>Imagen en factura</Label>
+            <div className="overflow-hidden rounded-lg border border-border/80 bg-muted/30">
+              {previewSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element -- data URL o URL externa
+                <img src={previewSrc} alt="" className="aspect-16/10 w-full object-cover" />
+              ) : (
+                <div className="flex aspect-16/10 items-center justify-center text-sm text-muted-foreground">
+                  Sin imagen
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="gap-2"
+                disabled={loading || compressing}
+                onClick={() => document.getElementById("edit-proj-image-file")?.click()}
+              >
+                {compressing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {compressing ? "Comprimiendo…" : "Subir imagen"}
+              </Button>
+              <input
+                id="edit-proj-image-file"
+                type="file"
+                accept="image/*"
+                className="sr-only"
+                aria-label="Seleccionar imagen del proyecto"
+                title="Seleccionar imagen del proyecto"
+                onChange={(ev) => void handleFileChange(ev)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                disabled={loading || compressing || (!previewSrc && !project?.invoiceImageUrl && !project?.invoiceImageData)}
+                onClick={() => {
+                  setRemoveImage(true);
+                  setPendingImageData(null);
+                  setInvoiceImageUrl("");
+                }}
+              >
+                <ImageOff className="h-4 w-4" />
+                Quitar imagen
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Se redimensiona y comprime (WebP o JPEG) para que ocupe poco en la base de datos. Si pones una URL
+              externa, sustituye la imagen subida.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="edit-proj-image-url">O URL de imagen (opcional)</Label>
+            <Input
+              id="edit-proj-image-url"
+              type="url"
+              placeholder="https://..."
+              value={invoiceImageUrl}
+              onChange={(e) => {
+                setInvoiceImageUrl(e.target.value);
+                if (e.target.value.trim()) {
+                  setPendingImageData(null);
+                  setRemoveImage(false);
+                }
+              }}
+              disabled={loading || compressing}
+            />
+          </div>
+
           <DialogFooter className="gap-2 sm:justify-end">
             <Button type="button" variant="outline" disabled={loading} onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || compressing}>
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

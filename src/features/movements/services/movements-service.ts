@@ -1,7 +1,6 @@
 import {
   Timestamp,
   collection,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -14,6 +13,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { db } from "@/shared/firebase/firebase-client";
+import { createDeleteAuditRecord } from "@/features/audit/services/delete-audit-service";
 import type { Movement, MovementKind, MovementTimestamp } from "../models/movement-types";
 import { splitAmountEqually } from "../utils/split-amount";
 import { sortMovementsForDisplayList } from "../utils/movements-display";
@@ -192,6 +192,7 @@ function mapMovementDoc(id: string, data: Record<string, unknown>): Movement {
     createdAt,
     personId,
     personName,
+    status: data.status === "deleted" ? "deleted" : "active",
   };
 }
 
@@ -261,7 +262,9 @@ export async function backfillProjectInvoiceNumbers(
 export async function fetchMovements(companyId: string, projectId: string): Promise<Movement[]> {
   const q = query(movementsCol(companyId, projectId), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
-  const list = snap.docs.map((d) => mapMovementDoc(d.id, d.data()));
+  const list = snap.docs
+    .map((d) => mapMovementDoc(d.id, d.data()))
+    .filter((m) => m.status !== "deleted");
   return sortMovementsForDisplayList(list);
 }
 
@@ -530,5 +533,20 @@ export async function deleteMovement(
   projectId: string,
   movementId: string,
 ): Promise<void> {
-  await deleteDoc(doc(db, "companies", companyId, "projects", projectId, "movements", movementId));
+  const ref = doc(db, "companies", companyId, "projects", projectId, "movements", movementId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  await createDeleteAuditRecord(companyId, {
+    entityType: "movement",
+    entityId: movementId,
+    projectId,
+    originModule: "movements",
+    snapshot: snap.data() as Record<string, unknown>,
+  });
+
+  await updateDoc(ref, {
+    status: "deleted",
+    deletedAt: serverTimestamp(),
+  });
 }

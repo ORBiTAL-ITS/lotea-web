@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { IdCard, Loader2, Pencil, Phone, UserPlus } from "lucide-react";
+import { IdCard, Loader2, Pencil, Phone, Search, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,6 +27,7 @@ import type { Person } from "../models/person-types";
 import { createPerson, fetchPeople, updatePerson } from "../services/people-service";
 import { CompanyPickerSection } from "@/features/companies/components/company-picker-section";
 import { fetchCompanyById } from "@/features/companies/services/companies-service";
+import { WorkersPaymentsSection } from "./workers-payments-section";
 
 type FormState = {
   name: string;
@@ -42,6 +43,7 @@ export function PeoplePage() {
   const { companyId } = useEffectiveCompanyId(tick);
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hasFetched, setHasFetched] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -80,17 +82,21 @@ export function PeoplePage() {
     try {
       const list = await fetchPeople(companyId);
       setPeople(list);
+      setHasFetched(true);
     } catch {
       setError("No se pudo cargar el listado de personas.");
       setPeople([]);
+      setHasFetched(true);
     } finally {
       setLoading(false);
     }
   }, [companyId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    setPeople([]);
+    setHasFetched(false);
+    setError(null);
+  }, [companyId]);
 
   function openCreate() {
     setForm(emptyForm);
@@ -151,8 +157,9 @@ export function PeoplePage() {
         </h1>
         <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground sm:text-[0.9375rem]">
           Catálogo de personas para vincular a movimientos imputados a lote (nombre en comprobantes y
-          trazabilidad). Crea o edita registros aquí; también puedes dar de alta una persona al registrar
-          un ingreso o egreso con lote.
+          trazabilidad). Pulsa <span className="font-medium text-foreground">Buscar</span> para cargar el listado
+          (no se consulta al entrar). Debajo, pagos a trabajadores con el mismo criterio. Crea o edita personas
+          aquí; también puedes dar de alta una persona al registrar un ingreso o egreso con lote.
         </p>
       </header>
 
@@ -191,14 +198,34 @@ export function PeoplePage() {
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              {loading ? "Cargando…" : `${people.length} persona${people.length === 1 ? "" : "s"}`}
+              {loading
+                ? "Cargando…"
+                : hasFetched
+                  ? `${people.length} persona${people.length === 1 ? "" : "s"}`
+                  : "Pulsa Buscar para cargar el catálogo."}
             </p>
-            {canWrite && !isViewer ? (
-              <Button type="button" className="gap-2" onClick={openCreate}>
-                <UserPlus className="h-4 w-4" aria-hidden />
-                Nueva persona
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="gap-2"
+                disabled={loading}
+                onClick={() => void load()}
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <Search className="h-4 w-4" aria-hidden />
+                )}
+                Buscar
               </Button>
-            ) : null}
+              {canWrite && !isViewer ? (
+                <Button type="button" className="gap-2" onClick={openCreate}>
+                  <UserPlus className="h-4 w-4" aria-hidden />
+                  Nueva persona
+                </Button>
+              ) : null}
+            </div>
           </div>
 
           {error && !createOpen && !editOpen ? (
@@ -211,6 +238,15 @@ export function PeoplePage() {
             <div className="flex justify-center py-16">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" aria-hidden />
             </div>
+          ) : !hasFetched ? (
+            <Card className="border-dashed border-border/80 bg-muted/15">
+              <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+                <p className="max-w-md text-sm text-muted-foreground">
+                  Pulsa <span className="font-medium text-foreground">Buscar</span> arriba para consultar el
+                  catálogo en Firestore. No se cargan datos solo por entrar a esta página.
+                </p>
+              </CardContent>
+            </Card>
           ) : people.length === 0 ? (
             <Card className="border-dashed bg-muted/20">
               <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
@@ -262,6 +298,8 @@ export function PeoplePage() {
               ))}
             </ul>
           )}
+
+          <WorkersPaymentsSection companyId={companyId} />
         </>
       )}
 

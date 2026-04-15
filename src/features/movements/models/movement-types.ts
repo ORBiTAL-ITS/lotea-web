@@ -29,4 +29,6 @@ export type Movement = {
   personId?: string | null;
   /** Nombre mostrado (snapshot al guardar). */
   personName?: string | null;
+  /** Estado lógico del registro (soft-delete). */
+  status?: "active" | "deleted";
 };

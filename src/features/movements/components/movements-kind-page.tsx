@@ -76,6 +76,8 @@ import {
   fetchProjects,
 } from '@/features/projects/services/projects-service'
 import type { Project } from '@/features/projects/models/project-types'
+import type { Lot } from '@/features/lots/models/lot-types'
+import { fetchProjectLots } from '@/features/lots/services/lots-service'
 import type { Movement, MovementKind } from '../models/movement-types'
 import {
   backfillProjectInvoiceNumbers,
@@ -116,7 +118,7 @@ const copy: Record<
   income: {
     title: 'Ingresos',
     description:
-      'Cada registro es un comprobante con numeración I-1, I-2… por proyecto; puedes imprimirlo desde Acciones. Fecha contable, lote u opcional. Elige proyecto y mes (opcional), Buscar información, refina por texto y usa +.',
+      'Cada registro es un comprobante con numeración I-1, I-2… por proyecto; puedes imprimirlo desde Acciones. Imputación a lote: titulares desde el catálogo Lotes o primera venta en lote libre. Elige proyecto y mes (opcional), Buscar información, refina por texto y usa +.',
     emptyCard: 'Para ver ingresos necesitas una empresa activa.',
     listTitle: 'Ingresos en este proyecto',
     searchPh: 'Buscar en ingresos…',
@@ -145,6 +147,8 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
   const [projectId, setProjectId] = useState<string | null>(null)
   const [loadedProject, setLoadedProject] = useState<Project | null>(null)
   const [movements, setMovements] = useState<Movement[]>([])
+  /** Catálogo de lotes del proyecto cargado (ingresos: titulares en el modal +). */
+  const [projectLots, setProjectLots] = useState<Lot[]>([])
   const [loadingSearch, setLoadingSearch] = useState(false)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [movementsFilter, setMovementsFilter] = useState('')
@@ -219,7 +223,7 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
       if (kind === 'expense') {
         setProjects(fetched.filter(p => !isGastosProjectId(p.id)))
       } else {
-        setProjects(fetched)
+        setProjects(fetched.filter(p => !isGastosProjectId(p.id)))
       }
     } finally {
       setLoadingProjects(false)
@@ -319,6 +323,7 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
       setPanelError(null)
       setLoadingSearch(true)
       setMovementsFilter('')
+      setProjectLots([])
       try {
         const ensured = await ensureGastosProject(companyId)
         if (!ensured) {
@@ -352,10 +357,21 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
     setLoadedProject(proj)
     setMovementsFilter('')
     try {
-      const list = await fetchMovements(companyId, projectId)
-      setMovements(list)
+      if (kind === 'income') {
+        const [list, lots] = await Promise.all([
+          fetchMovements(companyId, projectId),
+          fetchProjectLots(companyId, projectId),
+        ])
+        setMovements(list)
+        setProjectLots(lots)
+      } else {
+        const list = await fetchMovements(companyId, projectId)
+        setMovements(list)
+        setProjectLots([])
+      }
     } catch {
       setMovements([])
+      setProjectLots([])
       setPanelError('No se pudo cargar los movimientos (¿permisos o índice Firestore?).')
     } finally {
       setLoadingSearch(false)
@@ -448,6 +464,11 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
                 syncedProjectMovements={
                   loadedProject && projectId === loadedProject.id ? movements : undefined
                 }
+                syncedProjectLots={
+                  kind === 'income' && loadedProject && projectId === loadedProject.id
+                    ? projectLots
+                    : undefined
+                }
                 onCreated={() => void reloadMovements()}
               />
             ) : null}
@@ -501,6 +522,7 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
                         setProjectId(v)
                         setLoadedProject(null)
                         setMovements([])
+                        setProjectLots([])
                         setMovementsFilter('')
                         setMonthFilter('')
                         setPanelError(null)
@@ -1052,7 +1074,7 @@ export function MovementsKindPage({ kind }: { kind: MovementKind }) {
                         <DialogHeader>
                           <DialogTitle>Eliminar movimiento</DialogTitle>
                           <DialogDescription>
-                            Esta acción no se puede deshacer. ¿Quieres eliminar el
+                            Este registro se quitará de la vista activa y quedará en historial. ¿Quieres eliminar el
                             registro{' '}
                             <span className='font-medium text-foreground'>
                               «{deletingMovement?.concept ?? ''}»
